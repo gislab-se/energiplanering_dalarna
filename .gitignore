@@ -1,0 +1,43 @@
+﻿# OS/editor
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+*.swp
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# R
+.Rhistory
+.RData
+.Rproj.user/
+
+# QGIS temp/backups
+*.qgs~
+*.qgz~
+*.gpkg-wal
+*.gpkg-shm
+
+# Local runtime
+logs/*.log
+
+# Local-only project data (never commit source/derived datasets)
+data/raw/**
+data/external/**
+data/interim/**
+data/processed/**
+!data/**/.gitkeep
+
+# Local-only documents and exports
+docs/inputs/**
+docs/slides/**
+maps/exports/**
+!docs/**/.gitkeep
+!maps/**/.gitkeep
