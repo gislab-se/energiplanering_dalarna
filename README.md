@@ -22,6 +22,7 @@ This repository is organized to keep source data, processing steps, map projects
 - `config/` project settings and environment templates
 - `notebooks/` exploration notebooks (non-production)
 - `logs/` run logs
+- `apps/` interactive apps (for example Streamlit dashboards)
 
 ## Working rules
 1. Never edit files inside `data/raw/`.
@@ -47,6 +48,14 @@ Use lowercase and underscores:
 - Add your first processing script in `scripts/`.
 - Add a QGIS project file to `maps/qgis_projects/`.
 - Track large GIS/doc binaries with Git LFS (see `.gitattributes`).
+
+## Text Analysis App (Hem x kommun)
+Run analysis export first, then launch app:
+
+```bash
+Rscript scripts/hem_kommun_network.R
+streamlit run apps/hem_kommun_app.py
+```
 
 ## Data policy
 All datasets and source documents are local-only and should not be pushed to GitHub. Keep only structure (.gitkeep), scripts, config, and documentation text under version control.
