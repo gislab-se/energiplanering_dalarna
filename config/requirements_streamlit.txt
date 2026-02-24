@@ -1,6 +1,9 @@
 ﻿geopandas
 folium
 streamlit
+plotly
+pyvis
+pandas
 streamlit-folium
 shapely
 pyproj
