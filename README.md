@@ -49,14 +49,33 @@ Use lowercase and underscores:
 - Add a QGIS project file to `maps/qgis_projects/`.
 - Track large GIS/doc binaries with Git LFS (see `.gitattributes`).
 
-## Text Analysis App (Hem x kommun)
-Run analysis export first, then launch app:
+## Apps (Streamlit)
+Use the project virtual environment to avoid PATH issues.
+
+### Python dependencies (once per environment)
+```bash
+.\.venv\Scripts\python.exe -m pip install streamlit streamlit-folium geopandas folium psycopg2-binary
+```
+
+### 1) Text Analysis App (Hem x kommun)
+Run analysis export first, then launch the app:
 
 ```bash
 Rscript scripts/hem_kommun_network.R
-streamlit run apps/hem_kommun_app.py
+.\.venv\Scripts\python.exe -m streamlit run apps/hem_kommun_app.py
 ```
+
+### 2) Geodata App (Landskapstyper i Dalarna)
+Launch directly:
+
+```bash
+.\.venv\Scripts\python.exe -m streamlit run app.py
+```
+
+If you see `ModuleNotFoundError` (for example `streamlit_folium` or `geopandas`), run the dependency install command above in the same environment.
 
 ## Data policy
 All datasets and source documents are local-only and should not be pushed to GitHub. Keep only structure (.gitkeep), scripts, config, and documentation text under version control.
+
+
 
