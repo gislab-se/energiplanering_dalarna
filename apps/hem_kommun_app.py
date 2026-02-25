@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import pandas as pd
@@ -39,7 +40,8 @@ st.info(
     "3) switch Sankey mode, 4) inspect Network 1 (kommun-context) and Network 2 (kommun-focus words)."
 )
 
-DEFAULT_OUT = Path("data/interim/hem_kommun_network")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_OUT = REPO_ROOT / "data" / "interim" / "hem_kommun_network"
 HEM_SENTINEL = "hem*"
 HEM_CORE_FORMS = {
     "hem",
@@ -511,7 +513,20 @@ tokens = frames["tokens"].copy()
 word_freq = frames["word_freq"].copy()
 
 if tokens.empty:
-    st.error("Missing response_tokens.csv. Run: Rscript scripts/hem_kommun_network.R")
+    st.warning(
+        "response_tokens.csv saknas i deploy-miljon. "
+        "Ladda upp CSV-filer nedan eller generera lokalt med "
+        "`Rscript scripts/hem_kommun_network.R`."
+    )
+    up1 = st.file_uploader("Upload response_tokens.csv", type=["csv"], key="upload_tokens")
+    up2 = st.file_uploader("Upload word_frequency.csv (optional)", type=["csv"], key="upload_word_freq")
+    if up1 is not None:
+        tokens = pd.read_csv(io.BytesIO(up1.getvalue()))
+    if up2 is not None:
+        word_freq = pd.read_csv(io.BytesIO(up2.getvalue()))
+
+if tokens.empty:
+    st.info("Vantar pa response_tokens.csv for att visa analysen.")
     st.stop()
 
 if "token" not in word_freq.columns:
