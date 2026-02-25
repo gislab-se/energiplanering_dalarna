@@ -68,6 +68,10 @@ Rscript scripts/hem_kommun_network.R
 Deploy note:
 - For Streamlit Cloud, keep a root `requirements.txt`.
 - If `data/interim/hem_kommun_network/response_tokens.csv` is not available in deploy, the app now supports uploading `response_tokens.csv` (and optional `word_frequency.csv`) from the UI.
+- Recommended Streamlit Cloud settings:
+  - Branch: `main`
+  - Main file path: `streamlit_app.py` (or `main.py`)
+  - Advanced setting: clear cache and redeploy if an old main file was configured.
 
 ### 2) Geodata App (Landskapstyper i Dalarna)
 Launch directly:
