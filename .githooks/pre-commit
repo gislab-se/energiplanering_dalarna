@@ -1,7 +1,17 @@
 #!/bin/sh
 
 # Block committing local-only data and heavy binary assets.
-if git diff --cached --name-only --diff-filter=ACMRT | grep -E '^(data_raw/|data/raw/|data/external/|data/interim/|data/processed/|docs/inputs/|docs/slides/|maps/exports/)|\.(zip|7z|rar|gpkg|shp|dbf|shx|prj|cpg|tif|tiff|pdf|ppt|pptx)$' >/dev/null 2>&1; then
+# Exception: allow Streamlit app bundle under data/interim/hem_kommun_network/.
+staged="$(git diff --cached --name-only --diff-filter=ACMRT)"
+
+if echo "$staged" | grep -E '^data/interim/' | grep -Ev '^data/interim/hem_kommun_network/' >/dev/null 2>&1; then
+  echo "ERROR: Commit blocked by data-protection hook."
+  echo "Only data/interim/hem_kommun_network/ is allowed under data/interim/."
+  echo "Unstage with: git restore --staged <file>"
+  exit 1
+fi
+
+if echo "$staged" | grep -E '^(data_raw/|data/raw/|data/external/|data/processed/|docs/inputs/|docs/slides/|maps/exports/)|\.(zip|7z|rar|gpkg|shp|dbf|shx|prj|cpg|tif|tiff|pdf|ppt|pptx)$' >/dev/null 2>&1; then
   echo "ERROR: Commit blocked by data-protection hook."
   echo "Staged files include local-only data/docs/exports or blocked binary types."
   echo "Unstage with: git restore --staged <file>"

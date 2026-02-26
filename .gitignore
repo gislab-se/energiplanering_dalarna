@@ -28,12 +28,22 @@ venv/
 # Local runtime
 logs/*.log
 
-# Local-only project data (never commit source/derived datasets)
+# Local-only project data
 data/raw/**
 data/external/**
-data/interim/**
 data/processed/**
 !data/**/.gitkeep
+
+# Interim policy:
+# - keep all interim data ignored by default
+# - allow the small app-ready Streamlit bundle
+# - keep novus/private interim data ignored
+data/interim/*
+!data/interim/.gitkeep
+!data/interim/hem_kommun_network/
+!data/interim/hem_kommun_network/**
+data/interim/novus/
+data/interim/novus/**
 
 # Local-only documents and exports
 docs/inputs/**

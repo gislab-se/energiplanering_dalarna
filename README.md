@@ -58,16 +58,16 @@ Use the project virtual environment to avoid PATH issues.
 ```
 
 ### 1) Text Analysis App (Hem x kommun)
-Run analysis export first, then launch the app:
+Regenerate the app artifact bundle, then launch the app:
 
 ```bash
-Rscript scripts/hem_kommun_network.R
+python scripts/build_hem_kommun_network.py
 .\.venv\Scripts\python.exe -m streamlit run apps/hem_kommun_app.py
 ```
 
 Deploy note:
 - For Streamlit Cloud, keep a root `requirements.txt`.
-- If `data/interim/hem_kommun_network/response_tokens.csv` is not available in deploy, the app now supports uploading `response_tokens.csv` (and optional `word_frequency.csv`) from the UI.
+- The app expects committed artifacts in `data/interim/hem_kommun_network/`.
 - Recommended Streamlit Cloud settings:
   - Branch: `main`
   - Main file path: `streamlit_app.py` (or `main.py`)
@@ -83,7 +83,21 @@ Launch directly:
 If you see `ModuleNotFoundError` (for example `streamlit_folium` or `geopandas`), run the dependency install command above in the same environment.
 
 ## Data policy
-All datasets and source documents are local-only and should not be pushed to GitHub. Keep only structure (.gitkeep), scripts, config, and documentation text under version control.
+To support Streamlit Cloud, this repo commits a small app-ready bundle:
+- Commit: `data/interim/hem_kommun_network/**`
+- Do not commit: large/private data (for example `data/interim/novus/**`, `novus_full_dataframe.csv`, and other raw/heavy files)
+
+Why:
+- Streamlit Cloud needs the prebuilt hem_kommun_network artifacts at runtime.
+- novus and other heavy/private datasets should stay out of git for privacy and repo size.
+
+Update workflow for app artifacts:
+```bash
+python scripts/build_hem_kommun_network.py
+git add data/interim/hem_kommun_network
+git commit -m "Update hem_kommun_network artifacts"
+git push
+```
 
 
 

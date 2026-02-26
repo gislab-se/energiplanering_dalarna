@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 from pathlib import Path
 
 import pandas as pd
@@ -56,12 +55,39 @@ HEM_CORE_FORMS = {
     "hemkomun",
 }
 HOME_THEME_PREFIXES = ("hem", "stug", "fritidshus", "bostad", "hus", "boend")
+REQUIRED_ARTIFACTS = [
+    "edges.csv",
+    "nodes.csv",
+    "hem_sankey.html",
+    "hem_by_kommun.csv",
+    "hem_forms_frequency.csv",
+    "response_tokens.csv",
+]
 
 
 def read_csv_safe(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
     return pd.read_csv(path)
+
+
+def missing_committed_artifacts(base: Path) -> list[str]:
+    missing: list[str] = []
+
+    for name in REQUIRED_ARTIFACTS:
+        if not (base / name).exists():
+            missing.append(name)
+
+    if not list(base.glob("hem_context_*.csv")):
+        missing.append("hem_context_*.csv")
+    if not list(base.glob("word_frequency*.csv")):
+        missing.append("word_frequency*.csv")
+
+    sankey_assets = base / "hem_sankey_files"
+    if not sankey_assets.exists():
+        missing.append("hem_sankey_files/")
+
+    return missing
 
 
 @st.cache_data(show_spinner=False)
@@ -512,21 +538,20 @@ frames = load_data(out_dir)
 tokens = frames["tokens"].copy()
 word_freq = frames["word_freq"].copy()
 
-if tokens.empty:
-    st.warning(
-        "response_tokens.csv saknas i deploy-miljon. "
-        "Ladda upp CSV-filer nedan eller generera lokalt med "
-        "`Rscript scripts/hem_kommun_network.R`."
+missing_bundle = missing_committed_artifacts(Path(out_dir))
+if missing_bundle:
+    st.error(
+        "Missing committed artifacts: data/interim/hem_kommun_network. "
+        "Run scripts/build_hem_kommun_network.py locally and commit the outputs."
     )
-    up1 = st.file_uploader("Upload response_tokens.csv", type=["csv"], key="upload_tokens")
-    up2 = st.file_uploader("Upload word_frequency.csv (optional)", type=["csv"], key="upload_word_freq")
-    if up1 is not None:
-        tokens = pd.read_csv(io.BytesIO(up1.getvalue()))
-    if up2 is not None:
-        word_freq = pd.read_csv(io.BytesIO(up2.getvalue()))
+    st.caption("Missing files/patterns: " + ", ".join(missing_bundle))
+    st.stop()
 
 if tokens.empty:
-    st.info("Vantar pa response_tokens.csv for att visa analysen.")
+    st.error(
+        "Missing committed artifacts: data/interim/hem_kommun_network. "
+        "Run scripts/build_hem_kommun_network.py locally and commit the outputs."
+    )
     st.stop()
 
 if "token" not in word_freq.columns:

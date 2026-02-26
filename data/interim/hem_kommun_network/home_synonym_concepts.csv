@@ -1,0 +1,9 @@
+concept,pattern,responses_with_concept,response_share,responses_with_both_hem_and_concept,share_given_hem,lift_vs_baseline
+hem_prefix,^hem,223,0.07759220598469033,223,1,12.887892376681615
+bostad_prefix,^bostad,5,0.0017397355601948504,1,0.004484304932735426,2.5775784753363227
+hus_prefix,^hus,14,0.0048712595685455815,1,0.004484304932735426,0.9205637411915438
+stuga_prefix,^stug,43,0.014961725817675714,0,0,0
+fritidshus_prefix,^fritidshus,9,0.003131524008350731,0,0,0
+boende_prefix,^boend,2,6.958942240779402e-4,0,0,0
+villa_prefix,^villa,1,3.479471120389701e-4,0,0,0
+lagenhet_prefix,^lägenhet|^lagenhet,0,0,0,0,NA
