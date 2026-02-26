@@ -80,6 +80,14 @@ Launch directly:
 .\.venv\Scripts\python.exe -m streamlit run app.py
 ```
 
+### 3) Layer Review App (8 lager)
+Explore aggregated and raw points across:
+`kommun`, `kommungrupp`, `landskapstyp`, `landskapskaraktar`, `kulturmiljo`, `friluftsliv`, `vindkraft`, `naturvarden`.
+
+```bash
+.\.venv\Scripts\python.exe -m streamlit run apps/layer_review_app.py
+```
+
 If you see `ModuleNotFoundError` (for example `streamlit_folium` or `geopandas`), run the dependency install command above in the same environment.
 
 ## Data policy
