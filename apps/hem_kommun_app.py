@@ -120,15 +120,26 @@ def make_token_mask(token_series: pd.Series, focus_item: str, match_mode: str, h
     token_series = token_series.astype(str).str.lower()
 
     if focus_item in FOCUS_PREFIX_BUNDLES:
+        if match_mode == "exact token":
+            return token_series == focus_item.replace("*", "")
         return token_series.str.startswith(FOCUS_PREFIX_BUNDLES[focus_item])
 
     if focus_item in FOCUS_EXACT_BUNDLES:
+        if match_mode == "prefix (word*)":
+            return token_series.str.startswith(focus_item.replace("*", ""))
         return token_series.isin(FOCUS_EXACT_BUNDLES[focus_item])
 
     if focus_item != HEM_SENTINEL:
         if match_mode == "exact token":
             return token_series == focus_item
         return token_series.str.startswith(focus_item)
+
+    if match_mode == "exact token":
+        if hem_definition == "hem-core (narrow)":
+            return token_series.isin(HEM_CORE_FORMS)
+        if hem_definition == "home-theme (hem+stuga+...)":
+            return token_series.isin({"hem", "hemma", "hemmet", "stuga", "stugan", "fritidshus", "bostad", "hus", "boende"})
+        return token_series.isin({"hem", "hemma", "hemmet", "hemmets"})
 
     if hem_definition == "hem-core (narrow)":
         return token_series.isin(HEM_CORE_FORMS)
@@ -139,10 +150,14 @@ def make_token_mask(token_series: pd.Series, focus_item: str, match_mode: str, h
 
 def focus_rule_text(focus_item: str, match_mode: str, hem_definition: str) -> str:
     if focus_item in FOCUS_PREFIX_BUNDLES:
+        if match_mode == "exact token":
+            return f"token equals '{focus_item.replace('*', '')}'"
         prefixes = "|".join(FOCUS_PREFIX_BUNDLES[focus_item])
         return f"token starts with {prefixes}"
 
     if focus_item in FOCUS_EXACT_BUNDLES:
+        if match_mode == "prefix (word*)":
+            return f"token starts with '{focus_item.replace('*', '')}'"
         forms = ", ".join(sorted(FOCUS_EXACT_BUNDLES[focus_item]))
         return f"token in {{{forms}}}"
 
@@ -156,6 +171,30 @@ def focus_rule_text(focus_item: str, match_mode: str, hem_definition: str) -> st
     if hem_definition == "home-theme (hem+stuga+...)":
         return "token starts with hem|stug|fritidshus|bostad|hus|boend"
     return "token starts with 'hem' (wide hem*)"
+
+
+def build_focus_hits(
+    tokens: pd.DataFrame,
+    common_words: list[str],
+    bundle_options: list[str],
+    bundle_match_mode: str,
+    hem_definition: str,
+) -> tuple[dict[str, int], list[str]]:
+    token_series = tokens["token"].astype(str).str.lower()
+    response_ids = tokens["response_id"].astype(str)
+    hits: dict[str, int] = {}
+
+    for bundle in bundle_options:
+        mask = make_token_mask(token_series, bundle, bundle_match_mode, hem_definition)
+        hits[bundle] = int(response_ids[mask].nunique())
+
+    for word in common_words:
+        if word in hits:
+            continue
+        hits[word] = int(response_ids[token_series == word].nunique())
+
+    ranked = [k for k, v in sorted(hits.items(), key=lambda kv: (-kv[1], kv[0])) if v > 0]
+    return hits, ranked
 
 
 def compute_focus_outputs(
@@ -336,12 +375,7 @@ def build_focus_word_edges(
         if not fw_norm:
             continue
 
-        if fw_norm == HEM_SENTINEL:
-            mask = make_token_mask(t["token"], HEM_SENTINEL, "prefix (word*)", hem_definition)
-        elif focus_word_match_mode == "prefix (word*)":
-            mask = t["token"].str.startswith(fw_norm)
-        else:
-            mask = t["token"] == fw_norm
+        mask = make_token_mask(t["token"], fw_norm, focus_word_match_mode, hem_definition)
 
         hits = t[mask][["response_id", "kommun"]].drop_duplicates()
         if hits.empty:
@@ -387,12 +421,7 @@ def build_focus_word_context_edges(
         if not fw_norm:
             continue
 
-        if fw_norm == HEM_SENTINEL:
-            mask = make_token_mask(t["token"], HEM_SENTINEL, "prefix (word*)", hem_definition)
-        elif focus_word_match_mode == "prefix (word*)":
-            mask = t["token"].str.startswith(fw_norm)
-        else:
-            mask = t["token"] == fw_norm
+        mask = make_token_mask(t["token"], fw_norm, focus_word_match_mode, hem_definition)
 
         focus_response_ids = set(t.loc[mask, "response_id"].astype(str).tolist())
         if not focus_response_ids:
@@ -589,16 +618,25 @@ else:
 bundle_options = [HEM_SENTINEL] + sorted(
     list(FOCUS_PREFIX_BUNDLES.keys()) + list(FOCUS_EXACT_BUNDLES.keys())
 )
-focus_options = bundle_options + [w for w in common_words if w not in bundle_options]
+focus_hits, ranked_focus_values = build_focus_hits(
+    tokens=tokens,
+    common_words=common_words,
+    bundle_options=bundle_options,
+    bundle_match_mode=focus_net_match_mode,
+    hem_definition="hem* (wide)",
+)
+focus_options = [f"{word} ({focus_hits[word]})" for word in ranked_focus_values]
+focus_label_to_value = {f"{word} ({focus_hits[word]})": word for word in ranked_focus_values}
 
 with st.sidebar:
     st.markdown("---")
     focus_select = st.selectbox("Focus word", options=focus_options, index=0)
     focus_custom = st.text_input("Or type another word", value="")
-    st.caption("Bundled focus options: " + ", ".join(bundle_options))
+    st.caption("Bundled focus options: " + ", ".join([f"{b} ({focus_hits.get(b, 0)})" for b in bundle_options]))
 
     hem_definition = "hem* (wide)"
-    if (not normalize_word(focus_custom) and focus_select == HEM_SENTINEL) or normalize_word(focus_custom) == HEM_SENTINEL:
+    selected_focus_value = focus_label_to_value[focus_select]
+    if (not normalize_word(focus_custom) and selected_focus_value == HEM_SENTINEL) or normalize_word(focus_custom) == HEM_SENTINEL:
         st.markdown("### Definition of hem")
         hem_definition = st.radio(
             "Used when focus is hem*",
@@ -611,7 +649,7 @@ with st.sidebar:
             "home-theme: hem/stuga/fritidshus/bostad/hus/boende."
         )
 
-focus_item = normalize_word(focus_custom) if normalize_word(focus_custom) else normalize_word(focus_select)
+focus_item = normalize_word(focus_custom) if normalize_word(focus_custom) else normalize_word(focus_label_to_value[focus_select])
 if not focus_item:
     st.error("Choose a focus word.")
     st.stop()
@@ -683,7 +721,7 @@ else:
             )
             st.plotly_chart(fig, use_container_width=True)
     else:
-        focus_word_list = focus_options[:sankey_n_focus_words]
+        focus_word_list = ranked_focus_values[:sankey_n_focus_words]
         fw_edges, _fw_counts = build_focus_word_edges(
             tokens=tokens,
             focus_words=focus_word_list,
@@ -775,7 +813,7 @@ st.caption(
 if Network is None:
     st.warning("PyVis not installed. Install with: pip install pyvis")
 else:
-    focus_word_list = focus_options[:focus_net_n_words]
+    focus_word_list = ranked_focus_values[:focus_net_n_words]
     fw_edges, fw_counts = build_focus_word_edges(
         tokens=tokens,
         focus_words=focus_word_list,
