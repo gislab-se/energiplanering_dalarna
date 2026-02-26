@@ -55,6 +55,19 @@ HEM_CORE_FORMS = {
     "hemkomun",
 }
 HOME_THEME_PREFIXES = ("hem", "stug", "fritidshus", "bostad", "hus", "boend")
+FOCUS_PREFIX_BUNDLES: dict[str, tuple[str, ...]] = {
+    "skog*": ("skog",),
+    "stuga*": ("stug",),
+    "fäbod*": ("fäbod",),
+    "fjäll*": ("fjäll",),
+    "sommarstuga*": ("sommarstug",),
+    "jaktmark*": ("jaktmark",),
+    "utsikt*": ("utsikt",),
+    "strand*": ("strand",),
+}
+FOCUS_EXACT_BUNDLES: dict[str, set[str]] = {
+    "natur*": {"natur", "naturen"},
+}
 REQUIRED_ARTIFACTS = [
     "edges.csv",
     "nodes.csv",
@@ -106,6 +119,12 @@ def normalize_word(x: str) -> str:
 def make_token_mask(token_series: pd.Series, focus_item: str, match_mode: str, hem_definition: str) -> pd.Series:
     token_series = token_series.astype(str).str.lower()
 
+    if focus_item in FOCUS_PREFIX_BUNDLES:
+        return token_series.str.startswith(FOCUS_PREFIX_BUNDLES[focus_item])
+
+    if focus_item in FOCUS_EXACT_BUNDLES:
+        return token_series.isin(FOCUS_EXACT_BUNDLES[focus_item])
+
     if focus_item != HEM_SENTINEL:
         if match_mode == "exact token":
             return token_series == focus_item
@@ -119,6 +138,14 @@ def make_token_mask(token_series: pd.Series, focus_item: str, match_mode: str, h
 
 
 def focus_rule_text(focus_item: str, match_mode: str, hem_definition: str) -> str:
+    if focus_item in FOCUS_PREFIX_BUNDLES:
+        prefixes = "|".join(FOCUS_PREFIX_BUNDLES[focus_item])
+        return f"token starts with {prefixes}"
+
+    if focus_item in FOCUS_EXACT_BUNDLES:
+        forms = ", ".join(sorted(FOCUS_EXACT_BUNDLES[focus_item]))
+        return f"token in {{{forms}}}"
+
     if focus_item != HEM_SENTINEL:
         if match_mode == "exact token":
             return f"token equals '{focus_item}'"
@@ -559,12 +586,16 @@ if "token" not in word_freq.columns:
 else:
     common_words = word_freq["token"].astype(str).str.lower().head(200).tolist()
 
-focus_options = [HEM_SENTINEL] + [w for w in common_words if w != HEM_SENTINEL]
+bundle_options = [HEM_SENTINEL] + sorted(
+    list(FOCUS_PREFIX_BUNDLES.keys()) + list(FOCUS_EXACT_BUNDLES.keys())
+)
+focus_options = bundle_options + [w for w in common_words if w not in bundle_options]
 
 with st.sidebar:
     st.markdown("---")
     focus_select = st.selectbox("Focus word", options=focus_options, index=0)
     focus_custom = st.text_input("Or type another word", value="")
+    st.caption("Bundled focus options: " + ", ".join(bundle_options))
 
     hem_definition = "hem* (wide)"
     if (not normalize_word(focus_custom) and focus_select == HEM_SENTINEL) or normalize_word(focus_custom) == HEM_SENTINEL:
