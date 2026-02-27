@@ -9,17 +9,16 @@ import streamlit as st
 import streamlit.components.v1 as components
 from streamlit_folium import folium_static
 
-from scripts.map_factory import (
-    build_map,
-    choose_default_field,
-    load_admin_layers_from_db,
-    load_dalarna_boundary_from_db,
-    load_layers,
-    load_theme_layer,
-    load_wind_turbines_dalarna_buffer,
-    load_plats_layers_from_db,
-    load_sensitivity_layers_from_db,
-)
+import scripts.map_factory as map_factory
+
+build_map = map_factory.build_map
+choose_default_field = map_factory.choose_default_field
+load_admin_layers_from_db = map_factory.load_admin_layers_from_db
+load_dalarna_boundary_from_db = map_factory.load_dalarna_boundary_from_db
+load_layers = map_factory.load_layers
+load_wind_turbines_dalarna_buffer = map_factory.load_wind_turbines_dalarna_buffer
+load_plats_layers_from_db = map_factory.load_plats_layers_from_db
+load_sensitivity_layers_from_db = map_factory.load_sensitivity_layers_from_db
 
 
 st.set_page_config(page_title="Energiomstallning i Dalarna", layout="wide")
@@ -45,7 +44,12 @@ def _cached_base_layers(repo_root_str: str):
 
 @st.cache_data(show_spinner=False, ttl=300)
 def _cached_theme_layer(repo_root_str: str, key: str):
-    return load_theme_layer(Path(repo_root_str), key)
+    repo = Path(repo_root_str)
+    if hasattr(map_factory, "load_theme_layer"):
+        return map_factory.load_theme_layer(repo, key)
+    if hasattr(map_factory, "load_theme_layers"):
+        return map_factory.load_theme_layers(repo)[key]
+    raise AttributeError("Neither load_theme_layer nor load_theme_layers exists in scripts.map_factory")
 
 
 @st.cache_data(show_spinner=False, ttl=300)
