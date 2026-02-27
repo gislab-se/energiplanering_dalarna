@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import inspect
 
 import folium
 import geopandas as gpd
@@ -109,6 +110,12 @@ def _cached_wind_layers(repo_root_str: str, buffer_m: int):
 
 def _empty_gdf() -> gpd.GeoDataFrame:
     return gpd.GeoDataFrame(geometry=[], crs=4326)
+
+
+def _build_map_compat(**kwargs):
+    sig = inspect.signature(build_map)
+    accepted = {k: v for k, v in kwargs.items() if k in sig.parameters}
+    return build_map(**accepted)
 
 
 def _numkey(series: pd.Series) -> pd.Series:
@@ -547,7 +554,7 @@ if show_wind_turbines:
         st.sidebar.warning("Kunde inte lasa in vindkraftverk i deployment.")
         show_wind_turbines = False
 
-m = build_map(
+m = _build_map_compat(
     sty=sty,
     kar=kar,
     sty_field=sty_field,
