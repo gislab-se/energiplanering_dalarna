@@ -1,0 +1,27 @@
+<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
+<qgis version="3.30.2-'s-Hertogenbosch">
+  <identifier></identifier>
+  <parentidentifier></parentidentifier>
+  <language></language>
+  <type>dataset</type>
+  <title></title>
+  <abstract></abstract>
+  <links/>
+  <dates/>
+  <fees></fees>
+  <encoding></encoding>
+  <crs>
+    <spatialrefsys nativeFormat="Wkt">
+      <wkt></wkt>
+      <proj4>+proj=utm +zone=33 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs</proj4>
+      <srsid>971</srsid>
+      <srid>3006</srid>
+      <authid>EPSG:3006</authid>
+      <description>SWEREF99 TM</description>
+      <projectionacronym>utm</projectionacronym>
+      <ellipsoidacronym>EPSG:7019</ellipsoidacronym>
+      <geographicflag>false</geographicflag>
+    </spatialrefsys>
+  </crs>
+  <extent/>
+</qgis>

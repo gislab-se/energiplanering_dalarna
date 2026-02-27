@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import inspect
+import os
 
 import folium
 import geopandas as gpd
@@ -36,21 +37,40 @@ def _cached_admin_layers():
 
 @st.cache_data(show_spinner=False, ttl=300)
 def _cached_lan_boundary():
-    return load_dalarna_boundary_from_db()
+    try:
+        return load_dalarna_boundary_from_db()
+    except Exception:
+        cloud_shp = repo_root / "data" / "cloud" / "Dalarna lansgrans.shp"
+        if cloud_shp.exists():
+            return gpd.read_file(cloud_shp).to_crs(4326)
+        raise
 
 
 @st.cache_data(show_spinner=False, ttl=300)
 def _cached_base_layers(repo_root_str: str):
-    return load_layers(Path(repo_root_str))
+    repo = Path(repo_root_str)
+    cloud_sty = repo / "data" / "cloud" / "lst_landskapstyper.gpkg"
+    cloud_kar = repo / "data" / "cloud" / "lst_landskapskaraktar.gpkg"
+    if cloud_sty.exists() and cloud_kar.exists():
+        return gpd.read_file(cloud_sty).to_crs(4326), gpd.read_file(cloud_kar).to_crs(4326)
+    return load_layers(repo)
 
 
 @st.cache_data(show_spinner=False, ttl=300)
 def _cached_theme_layer(repo_root_str: str, key: str):
     repo = Path(repo_root_str)
-    if key == "nature_reserve":
-        cloud_path = repo / "data" / "cloud" / "nature_reserve_dalarna_light.gpkg"
+    cloud_map = {
+        "nature_reserve": "nature_reserve_dalarna_light.gpkg",
+        "rorligt_friluftsliv": "lst_rorligt_friluftsliv.gpkg",
+        "utbyggnad_vindkraft": "lst_utbyggnad_vindkraft.gpkg",
+        "kulturmiljovard": "lst_kulturmiljovard.gpkg",
+        "landskapstyp": "lst_landskapstyper.gpkg",
+        "landskapskaraktar": "lst_landskapskaraktar.gpkg",
+    }
+    if key in cloud_map:
+        cloud_path = repo / "data" / "cloud" / cloud_map[key]
         if cloud_path.exists():
-            return gpd.read_file(cloud_path)
+            return gpd.read_file(cloud_path).to_crs(4326)
     if hasattr(map_factory, "load_theme_layer"):
         return map_factory.load_theme_layer(repo, key)
     if hasattr(map_factory, "load_theme_layers"):
@@ -132,6 +152,10 @@ def _build_map_compat(**kwargs):
 
 def _numkey(series: pd.Series) -> pd.Series:
     return series.astype(str).str.replace(".0", "", regex=False).str.strip()
+
+
+def _db_ready() -> bool:
+    return bool(os.getenv("PGDATABASE") and os.getenv("PGUSER") and os.getenv("PGPASSWORD"))
 
 
 def _apply_area_filter(
@@ -524,17 +548,21 @@ for key, on in [
 
 kommuner, kommungrupper, lan_boundary = None, None, None
 if show_kommuner or show_kommungrupper or analysis_enabled or area_kind in {"kommun", "kommungrupp", "all_kommuner", "all_kommungrupper"}:
-    try:
-        kommuner, kommungrupper = _cached_admin_layers()
-    except Exception:
-        st.sidebar.warning("Kunde inte lasa in administrativa lager fran DB (saknade secrets i deployment?).")
+    if _db_ready():
+        try:
+            kommuner, kommungrupper = _cached_admin_layers()
+        except Exception:
+            st.sidebar.warning("Kunde inte lasa in administrativa lager fran DB.")
+            show_kommuner = False
+            show_kommungrupper = False
+    else:
         show_kommuner = False
         show_kommungrupper = False
 if show_lan_boundary or analysis_enabled or area_kind == "lan":
     try:
         lan_boundary = _cached_lan_boundary()
     except Exception:
-        st.sidebar.warning("Kunde inte lasa in lansgrans fran DB (saknade secrets i deployment?).")
+        st.sidebar.warning("Kunde inte lasa in lansgrans.")
         show_lan_boundary = False
 
 plats1_points = plats2_points = sensitive_points = non_sensitive_points = None
