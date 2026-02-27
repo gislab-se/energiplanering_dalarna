@@ -443,7 +443,7 @@ with st.sidebar:
     show_kulturmiljovard = st.checkbox("raa.RAA_RI_kulturmiljovard_MB3kap6", value=False)
 
     st.subheader("Punktlager")
-    show_plats1_points = st.checkbox("Visa Plats 1-punkter (farg efter kommungrupp)", value=False)
+    show_plats1_points = st.checkbox("Visa Plats 1-punkter (farg efter kommungrupp)", value=True)
     show_plats2_points = st.checkbox("Visa Plats 2-punkter (farg efter kommungrupp)", value=False)
     show_sensitive_points = st.checkbox("Visa extra kansliga punkter", value=False)
     show_non_sensitive_points = st.checkbox("Visa inte extra kansliga punkter", value=False)
