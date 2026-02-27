@@ -505,9 +505,18 @@ for key, on in [
 
 kommuner, kommungrupper, lan_boundary = None, None, None
 if show_kommuner or show_kommungrupper or analysis_enabled or area_kind in {"kommun", "kommungrupp", "all_kommuner", "all_kommungrupper"}:
-    kommuner, kommungrupper = _cached_admin_layers()
+    try:
+        kommuner, kommungrupper = _cached_admin_layers()
+    except Exception:
+        st.sidebar.warning("Kunde inte lasa in administrativa lager fran DB (saknade secrets i deployment?).")
+        show_kommuner = False
+        show_kommungrupper = False
 if show_lan_boundary or analysis_enabled or area_kind == "lan":
-    lan_boundary = _cached_lan_boundary()
+    try:
+        lan_boundary = _cached_lan_boundary()
+    except Exception:
+        st.sidebar.warning("Kunde inte lasa in lansgrans fran DB (saknade secrets i deployment?).")
+        show_lan_boundary = False
 
 plats1_points = plats2_points = sensitive_points = non_sensitive_points = None
 if show_plats1_points or show_plats2_points or show_sensitive_points or show_non_sensitive_points or analysis_enabled:
@@ -515,8 +524,15 @@ if show_plats1_points or show_plats2_points or show_sensitive_points or show_non
     if locked_layers is not None:
         plats1_points, plats2_points, sensitive_points, non_sensitive_points = locked_layers
     else:
-        plats1_points, plats2_points = _cached_plats_layers()
-        sensitive_points, non_sensitive_points = _cached_sensitivity_layers()
+        try:
+            plats1_points, plats2_points = _cached_plats_layers()
+            sensitive_points, non_sensitive_points = _cached_sensitivity_layers()
+        except Exception:
+            st.sidebar.warning("Kunde inte lasa in punktlager fran DB och inga lasa lager hittades lokalt.")
+            show_plats1_points = False
+            show_plats2_points = False
+            show_sensitive_points = False
+            show_non_sensitive_points = False
 
     plats1_points = _apply_area_filter(plats1_points, filter_mode, area_kind, area_value, kommun_code_by_name, group_id_by_name, kommuner, kommungrupper)
     plats2_points = _apply_area_filter(plats2_points, filter_mode, area_kind, area_value, kommun_code_by_name, group_id_by_name, kommuner, kommungrupper)
@@ -525,7 +541,11 @@ if show_plats1_points or show_plats2_points or show_sensitive_points or show_non
 
 wind_turbines = None
 if show_wind_turbines:
-    wind_turbines, _ = _cached_wind_layers(str(repo_root), 30000)
+    try:
+        wind_turbines, _ = _cached_wind_layers(str(repo_root), 30000)
+    except Exception:
+        st.sidebar.warning("Kunde inte lasa in vindkraftverk i deployment.")
+        show_wind_turbines = False
 
 m = build_map(
     sty=sty,
