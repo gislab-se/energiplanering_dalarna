@@ -59,13 +59,41 @@ def _cached_sensitivity_layers():
 
 @st.cache_data(show_spinner=False, ttl=300)
 def _cached_locked_point_layers(repo_root_str: str):
-    gpkg = Path(repo_root_str) / "data" / "processed" / "locked_layers" / "novus_locked_points.gpkg"
+    repo = Path(repo_root_str)
+    gpkg = repo / "data" / "processed" / "locked_layers" / "novus_locked_points.gpkg"
     if not gpkg.exists():
         return None
     plats1 = gpd.read_file(gpkg, layer="plats_1").to_crs(4326)
     plats2 = gpd.read_file(gpkg, layer="plats_2").to_crs(4326)
     sensitive = gpd.read_file(gpkg, layer="plats_3_sensitive").to_crs(4326)
     non_sensitive = gpd.read_file(gpkg, layer="plats_4_not_sensitive").to_crs(4326)
+
+    # Add respondent home fields so Q1/QI filtering behaves the same as DB-backed layers.
+    csv_path = repo / "data" / "interim" / "novus" / "novus_full_dataframe.csv"
+    if csv_path.exists():
+        def _norm_key(series: pd.Series) -> pd.Series:
+            return series.astype(str).str.replace(".0", "", regex=False).str.strip()
+
+        base = pd.read_csv(csv_path, usecols=["Record", "respid", "Q1", "Kommungrupp"])
+        base["record_key"] = _norm_key(base["Record"])
+        base["respid_key"] = base["respid"].astype(str).str.strip()
+        base = base.rename(columns={"Q1": "home_kommunkod", "Kommungrupp": "home_kommungrupp"})
+        home_cols = base[["record_key", "respid_key", "home_kommunkod", "home_kommungrupp"]].drop_duplicates()
+
+        def _attach_home(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+            if gdf is None or len(gdf) == 0:
+                return gdf
+            out = gdf.copy()
+            out["record_key"] = _norm_key(out["record"])
+            out["respid_key"] = out["respid"].astype(str).str.strip()
+            out = out.merge(home_cols, on=["record_key", "respid_key"], how="left")
+            return out.drop(columns=["record_key", "respid_key"])
+
+        plats1 = _attach_home(plats1)
+        plats2 = _attach_home(plats2)
+        sensitive = _attach_home(sensitive)
+        non_sensitive = _attach_home(non_sensitive)
+
     return plats1, plats2, sensitive, non_sensitive
 
 
