@@ -2,3 +2,8 @@ streamlit
 pandas
 plotly
 pyvis
+folium
+streamlit-folium
+geopandas
+shapely
+psycopg2-binary
