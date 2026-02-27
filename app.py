@@ -107,6 +107,10 @@ def _cached_wind_layers(repo_root_str: str, buffer_m: int):
     return load_wind_turbines_dalarna_buffer(Path(repo_root_str), buffer_m=buffer_m)
 
 
+def _empty_gdf() -> gpd.GeoDataFrame:
+    return gpd.GeoDataFrame(geometry=[], crs=4326)
+
+
 def _numkey(series: pd.Series) -> pd.Series:
     return series.astype(str).str.replace(".0", "", regex=False).str.strip()
 
@@ -475,8 +479,16 @@ elif area_kind == "all_kommuner":
 else:
     q_area = "samtliga kommungrupper"
 
-sty, kar = _cached_base_layers(str(repo_root))
-sty_field, kar_field = choose_default_field(sty), choose_default_field(kar)
+sty, kar = _empty_gdf(), _empty_gdf()
+sty_field, kar_field = "geometry", "geometry"
+if show_sty or show_kar:
+    try:
+        sty, kar = _cached_base_layers(str(repo_root))
+        sty_field, kar_field = choose_default_field(sty), choose_default_field(kar)
+    except Exception:
+        st.sidebar.warning("Kunde inte lasa in landskapstyper/landskapskaraktar fran lokala datafiler i deployment.")
+        show_sty = False
+        show_kar = False
 
 theme_layers: dict[str, gpd.GeoDataFrame] = {}
 for key, on in [
@@ -486,7 +498,10 @@ for key, on in [
     ("kulturmiljovard", show_kulturmiljovard),
 ]:
     if on:
-        theme_layers[key] = _cached_theme_layer(str(repo_root), key)
+        try:
+            theme_layers[key] = _cached_theme_layer(str(repo_root), key)
+        except Exception:
+            st.sidebar.warning(f"Kunde inte lasa in lagret: {key}")
 
 kommuner, kommungrupper, lan_boundary = None, None, None
 if show_kommuner or show_kommungrupper or analysis_enabled or area_kind in {"kommun", "kommungrupp", "all_kommuner", "all_kommungrupper"}:
@@ -555,9 +570,9 @@ if analysis_enabled:
         non_sensitive_points,
     )
     lst_active_layers: list[tuple[str, gpd.GeoDataFrame, str | None]] = []
-    if show_sty:
+    if show_sty and sty is not None and len(sty) > 0:
         lst_active_layers.append(("sty", sty, sty_field))
-    if show_kar:
+    if show_kar and kar is not None and len(kar) > 0:
         lst_active_layers.append(("kar", kar, kar_field))
     for key in ["rorligt_friluftsliv", "utbyggnad_vindkraft", "nature_reserve", "kulturmiljovard"]:
         if key in theme_layers:
