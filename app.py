@@ -9,6 +9,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 from streamlit_folium import folium_static
+from shapely.geometry import Point
 
 import scripts.map_factory as map_factory
 
@@ -110,6 +111,11 @@ def _cached_wind_layers(repo_root_str: str, buffer_m: int):
 
 def _empty_gdf() -> gpd.GeoDataFrame:
     return gpd.GeoDataFrame(geometry=[], crs=4326)
+
+
+def _fallback_center_layer() -> gpd.GeoDataFrame:
+    # Safe fallback center in Dalarna so older build_map versions do not crash on empty sty.
+    return gpd.GeoDataFrame({"name": ["Dalarna"]}, geometry=[Point(15.0, 61.0)], crs=4326)
 
 
 def _build_map_compat(**kwargs):
@@ -553,6 +559,10 @@ if show_wind_turbines:
     except Exception:
         st.sidebar.warning("Kunde inte lasa in vindkraftverk i deployment.")
         show_wind_turbines = False
+
+# Compatibility guard for older build_map implementations that always derive map center from `sty`.
+if sty is None or len(sty) == 0:
+    sty = _fallback_center_layer()
 
 m = _build_map_compat(
     sty=sty,
