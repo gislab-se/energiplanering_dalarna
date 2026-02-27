@@ -47,6 +47,10 @@ def _cached_base_layers(repo_root_str: str):
 @st.cache_data(show_spinner=False, ttl=300)
 def _cached_theme_layer(repo_root_str: str, key: str):
     repo = Path(repo_root_str)
+    if key == "nature_reserve":
+        cloud_path = repo / "data" / "cloud" / "nature_reserve_dalarna_light.gpkg"
+        if cloud_path.exists():
+            return gpd.read_file(cloud_path)
     if hasattr(map_factory, "load_theme_layer"):
         return map_factory.load_theme_layer(repo, key)
     if hasattr(map_factory, "load_theme_layers"):
@@ -67,7 +71,9 @@ def _cached_sensitivity_layers():
 @st.cache_data(show_spinner=False, ttl=300)
 def _cached_locked_point_layers(repo_root_str: str):
     repo = Path(repo_root_str)
-    gpkg = repo / "data" / "processed" / "locked_layers" / "novus_locked_points.gpkg"
+    gpkg = repo / "data" / "cloud" / "novus_locked_points.gpkg"
+    if not gpkg.exists():
+        gpkg = repo / "data" / "processed" / "locked_layers" / "novus_locked_points.gpkg"
     if not gpkg.exists():
         return None
     plats1 = gpd.read_file(gpkg, layer="plats_1").to_crs(4326)
