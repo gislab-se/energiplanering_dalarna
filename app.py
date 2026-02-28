@@ -406,6 +406,7 @@ def _apply_area_filter(
     if gdf is None or len(gdf) == 0 or area_kind in {"lan", "all_kommuner", "all_kommungrupper"}:
         return gdf
 
+    # Spatial filter mode: clip points by selected polygon geometry.
     if filter_mode == "Koordinatlage (spatialt)":
         target = None
         if area_kind == "kommun" and kommuner is not None and len(kommuner) > 0:
@@ -416,11 +417,12 @@ def _apply_area_filter(
             return gdf.iloc[0:0].copy()
         return gdf[gdf.geometry.intersects(target.geometry.unary_union)]
 
+    # Hemvist (QI): filter by respondent home, not point location.
     if area_kind == "kommun":
         code = kommun_code_by_name.get(area_value)
         if code is None:
             return gdf.iloc[0:0].copy()
-        col = "home_kommunkod" if "home_kommunkod" in gdf.columns else ("kommunkod" if "kommunkod" in gdf.columns else None)
+        col = "home_kommunkod" if "home_kommunkod" in gdf.columns else None
         if col is None:
             return gdf.iloc[0:0].copy()
         return gdf[_numkey(gdf[col]) == str(code)]
@@ -459,12 +461,7 @@ def _apply_area_filter(
             code_to_gid = dict(zip(km["kommunkod_norm"], km["kommungrupp_id_norm"]))
             derived_gid = _numkey(gdf["home_kommunkod"]).map(code_to_gid)
             out = gdf[derived_gid.astype(str) == str(gid)]
-        # No fallback to stale home_kommungrupp/kommungrupp fields.
-        # If mapping via home_kommunkod is unavailable, use spatial fallback.
-        if len(out) == 0 and kommungrupper is not None and len(kommungrupper) > 0:
-            target = kommungrupper[kommungrupper["kommungrupp_namn"].astype(str) == str(area_value)]
-            if len(target) > 0:
-                return gdf[gdf.geometry.intersects(target.geometry.unary_union)]
+        # No fallback to stale home_kommungrupp/kommungrupp fields and no spatial fallback in Hemvist mode.
         return out
 
     return gdf
@@ -739,6 +736,11 @@ with st.sidebar:
     st.header("Kartinstallningar")
     selected_area = st.selectbox("Arbetsomrade", area_mode_options, index=0)
     filter_mode = st.selectbox("Filtergrund", ["Hemvist (QI)", "Koordinatlage (spatialt)"], index=0)
+    if filter_mode == "Hemvist (QI)":
+        st.caption(
+            "Hemvist (QI): For kommun och kommungrupp visas punkter fran respondenter som bor i valt arbetsomrade (Q1). "
+            "Punkterna kan ligga var som helst i lanet."
+        )
 
     st.subheader("Bakgrund")
     show_lan_boundary = st.checkbox("Visa länsgräns", value=False)
