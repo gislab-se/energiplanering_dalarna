@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 import inspect
+import importlib.util
 import os
 import re
+import sys
 
 import folium
 import geopandas as gpd
@@ -13,7 +15,19 @@ import streamlit.components.v1 as components
 from streamlit_folium import folium_static
 from shapely.geometry import Point
 
-import scripts.map_factory as map_factory
+try:
+    import scripts.map_factory as map_factory
+except Exception:
+    # Streamlit Cloud may resolve "scripts" to a non-local namespace.
+    # Fallback: load local scripts/map_factory.py directly.
+    _mf_path = Path(__file__).resolve().parent / "scripts" / "map_factory.py"
+    if str(_mf_path.parent.parent) not in sys.path:
+        sys.path.insert(0, str(_mf_path.parent.parent))
+    _spec = importlib.util.spec_from_file_location("local_map_factory", _mf_path)
+    if _spec is None or _spec.loader is None:
+        raise ImportError(f"Could not load local map_factory at {_mf_path}")
+    map_factory = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(map_factory)
 
 build_map = map_factory.build_map
 choose_default_field = map_factory.choose_default_field
