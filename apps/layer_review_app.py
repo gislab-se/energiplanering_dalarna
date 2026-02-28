@@ -111,8 +111,8 @@ LAYER_CFG = {
         "poly_table": "landskap.raa_ri_kulturmiljovard_mb3kap6",
         "id_col": "objectid",
         "name_col": "namn",
-        "vp_id_col": None,
-        "vp_name_col": None,
+        "vp_id_col": "kulturmiljo_id",
+        "vp_name_col": "kulturmiljo_namn",
         "agg_view": "interim.agg_points_kulturmiljo",
     },
     "friluftsliv": {
@@ -120,8 +120,8 @@ LAYER_CFG = {
         "poly_table": "landskap.lst_ri_rorligt_friluftsliv_mb4kap2",
         "id_col": "objectid",
         "name_col": "namn",
-        "vp_id_col": None,
-        "vp_name_col": None,
+        "vp_id_col": "friluftsliv_id",
+        "vp_name_col": "friluftsliv_namn",
         "agg_view": "interim.agg_points_friluftsliv",
     },
     "vindkraft": {
@@ -129,8 +129,8 @@ LAYER_CFG = {
         "poly_table": "landskap.lstw_regional_analys_vindkraft_juni2024",
         "id_col": "objektid",
         "name_col": "typ_av_omr",
-        "vp_id_col": None,
-        "vp_name_col": None,
+        "vp_id_col": "vindkraft_id",
+        "vp_name_col": "vindkraft_namn",
         "agg_view": "interim.agg_points_vindkraft",
     },
     "naturvarden": {
@@ -138,8 +138,8 @@ LAYER_CFG = {
         "poly_table": "landskap.lstw_pg204_naturvarden_kanda_av_lst_dalarna",
         "id_col": "objectid",
         "name_col": "objektnamn",
-        "vp_id_col": None,
-        "vp_name_col": None,
+        "vp_id_col": "naturvarden_id",
+        "vp_name_col": "naturvarden_namn",
         "agg_view": "interim.agg_points_naturvarden",
     },
 }
