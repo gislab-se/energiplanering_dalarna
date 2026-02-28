@@ -316,7 +316,19 @@ def _cached_locked_point_layers(repo_root_str: str):
         base["record_key"] = _norm_key(base["Record"])
         base["respid_key"] = base["respid"].astype(str).str.strip()
         base = base.rename(columns={"Q1": "home_kommunkod", "Kommungrupp": "home_kommungrupp"})
+        # Canonical current grouping from Q1 (kommunkod), independent of stale Kommungrupp in source.
+        base["home_kommunkod_norm"] = _norm_key(base["home_kommunkod"])
+        base["home_kommungrupp_current"] = base["home_kommunkod_norm"].map(CODE_TO_GROUP_NAME)
         home_cols = base[["record_key", "respid_key", "home_kommunkod", "home_kommungrupp"]].drop_duplicates()
+        home_cols_current = base[
+            ["record_key", "respid_key", "home_kommunkod", "home_kommungrupp", "home_kommungrupp_current"]
+        ].drop_duplicates()
+        # Secondary lookup by respid only (when record ids differ between sources).
+        by_respid = (
+            base[["respid_key", "home_kommunkod", "home_kommungrupp", "home_kommungrupp_current"]]
+            .dropna(subset=["respid_key"])
+            .drop_duplicates()
+        )
 
         def _attach_home(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
             if gdf is None or len(gdf) == 0:
@@ -324,7 +336,13 @@ def _cached_locked_point_layers(repo_root_str: str):
             out = gdf.copy()
             out["record_key"] = _norm_key(out["record"])
             out["respid_key"] = out["respid"].astype(str).str.strip()
-            out = out.merge(home_cols, on=["record_key", "respid_key"], how="left")
+            out = out.merge(home_cols_current, on=["record_key", "respid_key"], how="left")
+            miss = out["home_kommunkod"].isna() | (out["home_kommunkod"].astype(str).str.strip() == "")
+            if miss.any():
+                fill = out.loc[miss, ["respid_key"]].merge(by_respid, on="respid_key", how="left")
+                out.loc[miss, "home_kommunkod"] = fill["home_kommunkod"].values
+                out.loc[miss, "home_kommungrupp"] = fill["home_kommungrupp"].values
+                out.loc[miss, "home_kommungrupp_current"] = fill["home_kommungrupp_current"].values
             return out.drop(columns=["record_key", "respid_key"])
 
         plats1 = _attach_home(plats1)
@@ -412,6 +430,12 @@ def _apply_area_filter(
         if gid is None:
             return gdf.iloc[0:0].copy()
         out = gdf.iloc[0:0].copy()
+        # Preferred field when available (derived from Q1 with canonical mapping).
+        if filter_mode == "Hemvist (QI)" and "home_kommungrupp_current" in gdf.columns:
+            wanted = _norm_group_name(area_value)
+            curr = gdf["home_kommungrupp_current"].fillna("").astype(str).map(_norm_group_name)
+            out = gdf[curr == wanted]
+            return out
         # For Hemvist (QI): use canonical home kommunkod -> kommungrupp mapping.
         if filter_mode == "Hemvist (QI)" and "home_kommunkod" in gdf.columns:
             wanted = _norm_group_name(area_value)
