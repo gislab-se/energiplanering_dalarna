@@ -436,8 +436,10 @@ def _apply_area_filter(
         if filter_mode == "Hemvist (QI)" and "home_kommungrupp_current" in gdf.columns:
             wanted = _norm_group_name(area_value)
             curr = gdf["home_kommungrupp_current"].fillna("").astype(str).map(_norm_group_name)
-            out = gdf[curr == wanted]
-            return out
+            has_curr = curr.str.len() > 0
+            if has_curr.any():
+                out = gdf[curr == wanted]
+                return out
         # For Hemvist (QI): use canonical home kommunkod -> kommungrupp mapping.
         if filter_mode == "Hemvist (QI)" and "home_kommunkod" in gdf.columns:
             wanted = _norm_group_name(area_value)
