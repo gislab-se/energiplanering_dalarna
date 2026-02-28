@@ -538,8 +538,6 @@ def _analysis_summary(
 def _add_analysis_bubbles(m: folium.Map, summary: gpd.GeoDataFrame) -> int:
     if summary is None or len(summary) == 0:
         return 0
-    # Draw in a dedicated high-z pane so bubbles stay visible above dense point layers.
-    folium.map.CustomPane("analysis_bubbles", z_index=690).add_to(m)
     max_n = max(1, int(summary["n"].max()))
     palette = ["#ef4444", "#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16"]
     cats = [str(x) for x in summary["kategori"].astype(str).unique().tolist()]
@@ -565,7 +563,6 @@ def _add_analysis_bubbles(m: folium.Map, summary: gpd.GeoDataFrame) -> int:
             weight=4,
             fill=False,
             opacity=0.95,
-            pane="analysis_bubbles",
         ).add_to(m)
         folium.CircleMarker(
             location=[pt.y, pt.x],
@@ -577,7 +574,6 @@ def _add_analysis_bubbles(m: folium.Map, summary: gpd.GeoDataFrame) -> int:
             fill_opacity=0.8,
             tooltip=f"{label}: {n}",
             popup=folium.Popup(f"{label}<br>Antal: {n}", max_width=320),
-            pane="analysis_bubbles",
         ).add_to(m)
         folium.Marker(
             location=[pt.y, pt.x],
@@ -596,7 +592,6 @@ def _add_analysis_bubbles(m: folium.Map, summary: gpd.GeoDataFrame) -> int:
                     f"\">{label}: {n}</div>"
                 ),
             ),
-            pane="analysis_bubbles",
         ).add_to(m)
         drawn += 1
     return drawn
