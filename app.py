@@ -92,6 +92,19 @@ def _normalize_lan_boundary_schema(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         else:
             out["lanskod"] = ""
 
+    # Keep only polygon/line geometries for boundary rendering.
+    # Point geometries render as a blue marker in Folium, which is not desired here.
+    gtype = out.geometry.geom_type.astype(str)
+    keep = gtype.isin(["Polygon", "MultiPolygon", "LineString", "MultiLineString"])
+    out = out[keep].copy()
+    if len(out) == 0:
+        return out
+
+    # Convert polygon geometries to boundaries for a clear länsgräns line.
+    poly_mask = out.geometry.geom_type.astype(str).isin(["Polygon", "MultiPolygon"])
+    if poly_mask.any():
+        out.loc[poly_mask, "geometry"] = out.loc[poly_mask].geometry.boundary
+
     return out
 
 
@@ -112,6 +125,8 @@ def _normalize_kommuner_schema(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         out["kommunnamn"] = out[name_col].astype(str) if name_col else "Kommun"
     if "kommunkod" not in out.columns:
         out["kommunkod"] = out[code_col].astype(str) if code_col else ""
+    gtype = out.geometry.geom_type.astype(str)
+    out = out[gtype.isin(["Polygon", "MultiPolygon", "LineString", "MultiLineString"])].copy()
     return out
 
 
@@ -127,6 +142,8 @@ def _normalize_kommungrupper_schema(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         out["kommungrupp_id"] = out[id_col].astype(str) if id_col else ""
     if "kommuner" not in out.columns:
         out["kommuner"] = out[members_col].astype(str) if members_col else ""
+    gtype = out.geometry.geom_type.astype(str)
+    out = out[gtype.isin(["Polygon", "MultiPolygon", "LineString", "MultiLineString"])].copy()
     return out
 
 
@@ -714,6 +731,9 @@ if show_kommuner or show_kommungrupper or analysis_enabled or area_kind in {"kom
 if show_lan_boundary or analysis_enabled or area_kind == "lan":
     try:
         lan_boundary = _cached_lan_boundary()
+        if lan_boundary is None or len(lan_boundary) == 0:
+            st.sidebar.warning("Länsgräns-lagret saknar polygon/linje-geometri.")
+            show_lan_boundary = False
     except Exception:
         st.sidebar.warning("Kunde inte läsa in länsgräns.")
         show_lan_boundary = False
@@ -749,7 +769,14 @@ if show_wind_turbines:
 
 # Compatibility guard for older build_map implementations that always derive map center from `sty`.
 if sty is None or len(sty) == 0:
-    sty = _fallback_center_layer()
+    if lan_boundary is not None and len(lan_boundary) > 0:
+        sty = gpd.GeoDataFrame(geometry=lan_boundary.geometry.copy(), crs=lan_boundary.crs)
+    elif kommuner is not None and len(kommuner) > 0:
+        sty = gpd.GeoDataFrame(geometry=kommuner.geometry.copy(), crs=kommuner.crs)
+    elif kommungrupper is not None and len(kommungrupper) > 0:
+        sty = gpd.GeoDataFrame(geometry=kommungrupper.geometry.copy(), crs=kommungrupper.crs)
+    else:
+        sty = _fallback_center_layer()
 
 m = _build_map_compat(
     sty=sty,
