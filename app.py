@@ -28,6 +28,29 @@ st.set_page_config(page_title="Energiomstallning i Dalarna", layout="wide")
 st.title("Energiomstallning i Dalarna")
 
 repo_root = Path(__file__).resolve().parent
+cloud_dir = repo_root / "data" / "cloud"
+
+BACKGROUND_BUNDLE_GPKG = "background_layers.gpkg"
+LST_BUNDLE_GPKG = "lst_layers.gpkg"
+
+LST_BUNDLE_LAYER_BY_KEY = {
+    "landskapstyp": "landskapstyp",
+    "landskapskaraktar": "landskapskaraktar",
+    "rorligt_friluftsliv": "rorligt_friluftsliv",
+    "utbyggnad_vindkraft": "utbyggnad_vindkraft",
+    "nature_reserve": "nature_reserve",
+    "kulturmiljovard": "kulturmiljovard",
+}
+
+
+def _read_vector_4326(path: Path, layer: str | None = None, default_crs: int | None = None) -> gpd.GeoDataFrame:
+    if layer:
+        gdf = gpd.read_file(path, layer=layer)
+    else:
+        gdf = gpd.read_file(path)
+    if gdf.crs is None and default_crs is not None:
+        gdf = gdf.set_crs(default_crs)
+    return gdf.to_crs(4326)
 
 
 @st.cache_data(show_spinner=False, ttl=300)
@@ -40,25 +63,46 @@ def _cached_lan_boundary():
     try:
         return load_dalarna_boundary_from_db()
     except Exception:
-        cloud_shp = repo_root / "data" / "cloud" / "Dalarna lansgrans.shp"
+        background_bundle = cloud_dir / BACKGROUND_BUNDLE_GPKG
+        if background_bundle.exists():
+            try:
+                return _read_vector_4326(background_bundle, layer="lan_boundary", default_crs=3006)
+            except Exception:
+                pass
+        cloud_shp = cloud_dir / "Dalarna lansgrans.shp"
         if cloud_shp.exists():
-            return gpd.read_file(cloud_shp).to_crs(4326)
+            return _read_vector_4326(cloud_shp, default_crs=3006)
         raise
 
 
 @st.cache_data(show_spinner=False, ttl=300)
 def _cached_base_layers(repo_root_str: str):
     repo = Path(repo_root_str)
+    lst_bundle = repo / "data" / "cloud" / LST_BUNDLE_GPKG
+    if lst_bundle.exists():
+        try:
+            return (
+                _read_vector_4326(lst_bundle, layer=LST_BUNDLE_LAYER_BY_KEY["landskapstyp"], default_crs=3006),
+                _read_vector_4326(lst_bundle, layer=LST_BUNDLE_LAYER_BY_KEY["landskapskaraktar"], default_crs=3006),
+            )
+        except Exception:
+            pass
     cloud_sty = repo / "data" / "cloud" / "lst_landskapstyper.gpkg"
     cloud_kar = repo / "data" / "cloud" / "lst_landskapskaraktar.gpkg"
     if cloud_sty.exists() and cloud_kar.exists():
-        return gpd.read_file(cloud_sty).to_crs(4326), gpd.read_file(cloud_kar).to_crs(4326)
+        return _read_vector_4326(cloud_sty, default_crs=3006), _read_vector_4326(cloud_kar, default_crs=3006)
     return load_layers(repo)
 
 
 @st.cache_data(show_spinner=False, ttl=300)
 def _cached_theme_layer(repo_root_str: str, key: str):
     repo = Path(repo_root_str)
+    lst_bundle = repo / "data" / "cloud" / LST_BUNDLE_GPKG
+    if key in LST_BUNDLE_LAYER_BY_KEY and lst_bundle.exists():
+        try:
+            return _read_vector_4326(lst_bundle, layer=LST_BUNDLE_LAYER_BY_KEY[key], default_crs=3006)
+        except Exception:
+            pass
     cloud_map = {
         "nature_reserve": "nature_reserve_dalarna_light.gpkg",
         "rorligt_friluftsliv": "lst_rorligt_friluftsliv.gpkg",
@@ -70,7 +114,7 @@ def _cached_theme_layer(repo_root_str: str, key: str):
     if key in cloud_map:
         cloud_path = repo / "data" / "cloud" / cloud_map[key]
         if cloud_path.exists():
-            return gpd.read_file(cloud_path).to_crs(4326)
+            return _read_vector_4326(cloud_path, default_crs=3006)
     if hasattr(map_factory, "load_theme_layer"):
         return map_factory.load_theme_layer(repo, key)
     if hasattr(map_factory, "load_theme_layers"):
@@ -434,7 +478,7 @@ def _add_lst_zone_overlay(m: folium.Map, zone: gpd.GeoDataFrame | None) -> None:
     ).add_to(m)
 
 
-area_mode_options = ["Hela lanet", "Samtliga kommuner", "Samtliga kommungrupper"]
+area_mode_options = ["Hela länet", "Samtliga kommuner", "Samtliga kommungrupper"]
 kommun_code_by_name: dict[str, str] = {}
 group_id_by_name: dict[str, str] = {}
 try:
@@ -454,7 +498,7 @@ with st.sidebar:
     filter_mode = st.selectbox("Filtergrund", ["Hemvist (QI)", "Koordinatlage (spatialt)"], index=0)
 
     st.subheader("Bakgrund")
-    show_lan_boundary = st.checkbox("Visa lansgrans", value=False)
+    show_lan_boundary = st.checkbox("Visa länsgräns", value=False)
     show_kommungrupper = st.checkbox("Visa kommungrupper", value=False)
     show_kommuner = st.checkbox("Visa kommungrans", value=False)
 
@@ -484,7 +528,7 @@ with right_col:
     analysis_metric = st.selectbox("Matt", ["Punkter", "Unika respondenter"], index=0)
     analysis_near_m = st.slider("Narhetszon runt valt LST-lager (meter)", 0, 3000, 0, 50)
 
-if selected_area == "Hela lanet":
+if selected_area == "Hela länet":
     area_kind, area_value = "lan", ""
 elif selected_area == "Samtliga kommuner":
     area_kind, area_value = "all_kommuner", ""
@@ -512,7 +556,7 @@ else:
     q_points = ", ".join(active_point_labels[:-1]) + " och " + active_point_labels[-1]
 
 if area_kind == "lan":
-    q_area = "hela lanet"
+    q_area = "hela länet"
 elif area_kind == "kommun":
     q_area = f"kommunen {area_value}"
 elif area_kind == "kommungrupp":
@@ -562,7 +606,7 @@ if show_lan_boundary or analysis_enabled or area_kind == "lan":
     try:
         lan_boundary = _cached_lan_boundary()
     except Exception:
-        st.sidebar.warning("Kunde inte lasa in lansgrans.")
+        st.sidebar.warning("Kunde inte läsa in länsgräns.")
         show_lan_boundary = False
 
 plats1_points = plats2_points = sensitive_points = non_sensitive_points = None

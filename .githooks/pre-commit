@@ -11,9 +11,11 @@ if echo "$staged" | grep -E '^data/interim/' | grep -Ev '^data/interim/hem_kommu
   exit 1
 fi
 
-if echo "$staged" | grep -E '^(data_raw/|data/raw/|data/external/|data/processed/|docs/inputs/|docs/slides/|maps/exports/)|\.(zip|7z|rar|gpkg|shp|dbf|shx|prj|cpg|tif|tiff|pdf|ppt|pptx)$' >/dev/null 2>&1; then
+# Allow deploy bundle files under data/cloud/, but keep blocking the same types elsewhere.
+staged_non_cloud="$(echo "$staged" | grep -Ev '^data/cloud/' || true)"
+if echo "$staged_non_cloud" | grep -E '^(data_raw/|data/raw/|data/external/|data/processed/|docs/inputs/|docs/slides/|maps/exports/)|\.(zip|7z|rar|gpkg|shp|dbf|shx|prj|cpg|tif|tiff|pdf|ppt|pptx)$' >/dev/null 2>&1; then
   echo "ERROR: Commit blocked by data-protection hook."
-  echo "Staged files include local-only data/docs/exports or blocked binary types."
+  echo "Staged files include local-only data/docs/exports or blocked binary types (outside data/cloud/)."
   echo "Unstage with: git restore --staged <file>"
   exit 1
 fi

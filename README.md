@@ -80,6 +80,18 @@ Launch directly:
 .\.venv\Scripts\python.exe -m streamlit run app.py
 ```
 
+Optional: build compact Cloud bundles (fewer files, faster/more robust layer loading):
+
+```bash
+.\.venv\Scripts\python.exe scripts/10_build_streamlit_cloud_bundles.py
+```
+
+This writes:
+- `data/cloud/background_layers.gpkg` (layer: `lan_boundary`)
+- `data/cloud/lst_layers.gpkg` (layers: `landskapstyp`, `landskapskaraktar`, `rorligt_friluftsliv`, `utbyggnad_vindkraft`, `nature_reserve`, `kulturmiljovard`)
+
+`app.py` will auto-prefer these bundles if present.
+
 ### 3) Layer Review App (8 lager)
 Explore aggregated and raw points across:
 `kommun`, `kommungrupp`, `landskapstyp`, `landskapskaraktar`, `kulturmiljo`, `friluftsliv`, `vindkraft`, `naturvarden`.
