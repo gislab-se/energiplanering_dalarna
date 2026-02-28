@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 import unicodedata
@@ -30,6 +30,15 @@ GROUP_PALETTE = {
     6: "#af7aa1",
 }
 
+THEME_LAYER_SPECS = {
+    "landskapstyp": ("Lstw.LstW_Landskapstyper", "Lstw.LstW_Landskapstyper"),
+    "landskapskaraktar": ("Lstw.LstW_Landskapskaraktarsomraden", "Lstw.LstW_Landskapskaraktarsomraden"),
+    "rorligt_friluftsliv": ("lst.LST_RI_Rorligt_friluftsliv_MB4kap2", "lst.LST_RI_Rorligt_friluftsliv_MB4kap2"),
+    "utbyggnad_vindkraft": ("Lstw.LstW_Regional_analys_utbyggnad_vindkraft_juni2024", "Lstw.LstW_Regional_analys_utbyggnad_vindkraft_juni2024"),
+    "nature_reserve": ("qgis_osm", "naturereserve"),
+    "kulturmiljovard": ("raa.RAA_RI_kulturmiljovard_MB3kap6", "raa.RAA_RI_kulturmiljovard_MB3kap6"),
+}
+
 
 def _first_existing(paths: Iterable[Path]) -> Path:
     for p in paths:
@@ -38,19 +47,27 @@ def _first_existing(paths: Iterable[Path]) -> Path:
     raise FileNotFoundError("Could not find expected shapefile path")
 
 
+def _prefer_vector_path(folder: Path, stem: str) -> Path:
+    gpkg = folder / f"{stem}.gpkg"
+    shp = folder / f"{stem}.shp"
+    if gpkg.exists():
+        return gpkg
+    if shp.exists():
+        return shp
+    raise FileNotFoundError(f"Could not find expected layer: {stem}")
+
+
 def locate_layers(repo_root: Path) -> Tuple[Path, Path]:
-    base = (
-        repo_root
-        / "data"
-        / "raw"
-        / "unpacked"
-        / "Geodata-20260223T113354Z-1-001"
-        / "Geodata"
-        / "Landskapstyper gis"
-    )
-    sty = _first_existing(base.glob("*Landskapstyper*.shp"))
-    kar = _first_existing(base.glob("*Landskapskar*.shp"))
-    return sty, kar
+    unpacked = repo_root / "data" / "raw" / "unpacked"
+    try:
+        sty = _prefer_vector_path(unpacked / "Lstw.LstW_Landskapstyper", "Lstw.LstW_Landskapstyper")
+        kar = _prefer_vector_path(unpacked / "Lstw.LstW_Landskapskaraktarsomraden", "Lstw.LstW_Landskapskaraktarsomraden")
+        return sty, kar
+    except FileNotFoundError:
+        base = unpacked / "Geodata-20260223T113354Z-1-001" / "Geodata" / "Landskapstyper gis"
+        sty = _first_existing(base.glob("*Landskapstyper*.shp"))
+        kar = _first_existing(base.glob("*Landskapskar*.shp"))
+        return sty, kar
 
 
 def load_layers(repo_root: Path) -> Tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
@@ -58,6 +75,102 @@ def load_layers(repo_root: Path) -> Tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
     sty = gpd.read_file(sty_path).to_crs(4326)
     kar = gpd.read_file(kar_path).to_crs(4326)
     return sty, kar
+
+
+def _load_dalarna_boundary(repo_root: Path) -> gpd.GeoDataFrame:
+    try:
+        return load_dalarna_boundary_from_db().to_crs(4326)
+    except Exception:
+        fallback = (
+            repo_root
+            / "data"
+            / "raw"
+            / "unpacked"
+            / "Geodata-20260223T113354Z-1-001"
+            / "Geodata"
+            / "Dalarna lansgrans"
+            / "Dalarna lansgrans"
+            / "Dalarna lansgrans.shp"
+        )
+        lan = gpd.read_file(fallback)
+        if lan.crs is None:
+            lan = lan.set_crs(3006)
+        return lan.to_crs(4326)
+
+
+def _clip_and_simplify_to_dalarna(gdf: gpd.GeoDataFrame, dalarna_4326: gpd.GeoDataFrame, layer_key: str | None = None) -> gpd.GeoDataFrame:
+    if gdf is None or len(gdf) == 0:
+        return gdf
+    if gdf.crs is None:
+        gdf = gdf.set_crs(3006)
+    gdf = gdf.to_crs(4326)
+    clipped = gpd.clip(gdf, dalarna_4326)
+    if len(clipped) == 0:
+        return clipped
+
+    # Förenkla stora lager i meter för snabbare rendering i Streamlit/Folium.
+    tol = 0.0
+    n = len(clipped)
+    if layer_key == "nature_reserve":
+        if n > 25000:
+            tol = 140.0
+        elif n > 10000:
+            tol = 100.0
+        elif n > 2500:
+            tol = 60.0
+    elif n > 25000:
+        tol = 80.0
+    elif n > 10000:
+        tol = 50.0
+    elif n > 2500:
+        tol = 25.0
+
+    if tol > 0:
+        tmp = clipped.to_crs(3006).copy()
+        tmp["geometry"] = tmp.geometry.simplify(tolerance=tol, preserve_topology=True)
+        clipped = tmp.to_crs(4326)
+
+    # Avoid unary_union for this layer; source geometries may trigger topology errors.
+    if layer_key == "nature_reserve":
+        return clipped
+
+    return clipped
+
+
+def load_theme_layer(repo_root: Path, key: str) -> gpd.GeoDataFrame:
+    if key not in THEME_LAYER_SPECS:
+        raise KeyError(f"Unknown theme layer key: {key}")
+    if key == "nature_reserve":
+        path = repo_root / "data" / "qgis_osm" / "naturereserve.gpkg"
+        if not path.exists():
+            raise FileNotFoundError(f"Could not find expected layer: {path}")
+    else:
+        unpacked = repo_root / "data" / "raw" / "unpacked"
+        folder_name, stem = THEME_LAYER_SPECS[key]
+        path = _prefer_vector_path(unpacked / folder_name, stem)
+
+    # Persist en förenklad "light"-version av naturvärden för snabbare återladdning.
+    if key == "nature_reserve":
+        cache_dir = repo_root / "data" / "processed" / "light_layers"
+        cache_path = cache_dir / "nature_reserve_dalarna_light.gpkg"
+        if cache_path.exists():
+            return gpd.read_file(cache_path)
+
+    dalarna = _load_dalarna_boundary(repo_root)
+    gdf = gpd.read_file(path)
+    out = _clip_and_simplify_to_dalarna(gdf, dalarna, key)
+
+    if key == "nature_reserve":
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            out.to_file(cache_path, driver="GPKG")
+        except Exception:
+            pass
+    return out
+
+
+def load_theme_layers(repo_root: Path) -> dict[str, gpd.GeoDataFrame]:
+    return {key: load_theme_layer(repo_root, key) for key in THEME_LAYER_SPECS}
 
 
 def _parse_env_file(path: Path) -> dict[str, str]:
@@ -128,9 +241,14 @@ def load_plats_layers_from_db() -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
         plats1 = gpd.read_postgis(
             """
             SELECT
-              qgis_id, record, respid, kommungrupp, plats_nr, kommunkod, admin_2, plats_fritext, lat, lon,
+              p.qgis_id, p.record, p.respid, p.kommungrupp, p.plats_nr, p.kommunkod, p.admin_2, p.plats_fritext, p.lat, p.lon,
+              n.q1::text AS home_kommunkod,
+              n.kommungrupp::text AS home_kommungrupp,
               ST_Transform(geom, 4326)::geometry(Point, 4326) AS geom
-            FROM novus.v_plats1_geom_3006
+            FROM novus.v_plats1_geom_3006 p
+            LEFT JOIN novus.novus_full_dataframe n
+              ON n.record = p.record
+             AND n.respid = p.respid
             """,
             con,
             geom_col="geom",
@@ -138,9 +256,14 @@ def load_plats_layers_from_db() -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
         plats2 = gpd.read_postgis(
             """
             SELECT
-              qgis_id, record, respid, kommungrupp, plats_nr, kommunkod, admin_2, plats_fritext, lat, lon,
+              p.qgis_id, p.record, p.respid, p.kommungrupp, p.plats_nr, p.kommunkod, p.admin_2, p.plats_fritext, p.lat, p.lon,
+              n.q1::text AS home_kommunkod,
+              n.kommungrupp::text AS home_kommungrupp,
               ST_Transform(geom, 4326)::geometry(Point, 4326) AS geom
-            FROM novus.v_plats2_geom_3006
+            FROM novus.v_plats2_geom_3006 p
+            LEFT JOIN novus.novus_full_dataframe n
+              ON n.record = p.record
+             AND n.respid = p.respid
             """,
             con,
             geom_col="geom",
@@ -166,9 +289,14 @@ def load_sensitivity_layers_from_db() -> tuple[gpd.GeoDataFrame, gpd.GeoDataFram
         sensitive = gpd.read_postgis(
             """
             SELECT
-              qgis_id, record, respid, kommungrupp, plats_nr, kommunkod, admin_2, plats_fritext, lat, lon,
+              p.qgis_id, p.record, p.respid, p.kommungrupp, p.plats_nr, p.kommunkod, p.admin_2, p.plats_fritext, p.lat, p.lon,
+              n.q1::text AS home_kommunkod,
+              n.kommungrupp::text AS home_kommungrupp,
               ST_Transform(geom, 4326)::geometry(Point, 4326) AS geom
-            FROM novus.v_extra_sensitive_points_3006
+            FROM novus.v_extra_sensitive_points_3006 p
+            LEFT JOIN novus.novus_full_dataframe n
+              ON n.record = p.record
+             AND n.respid = p.respid
             """,
             con,
             geom_col="geom",
@@ -176,9 +304,14 @@ def load_sensitivity_layers_from_db() -> tuple[gpd.GeoDataFrame, gpd.GeoDataFram
         non_sensitive = gpd.read_postgis(
             """
             SELECT
-              qgis_id, record, respid, kommungrupp, plats_nr, kommunkod, admin_2, plats_fritext, lat, lon,
+              p.qgis_id, p.record, p.respid, p.kommungrupp, p.plats_nr, p.kommunkod, p.admin_2, p.plats_fritext, p.lat, p.lon,
+              n.q1::text AS home_kommunkod,
+              n.kommungrupp::text AS home_kommungrupp,
               ST_Transform(geom, 4326)::geometry(Point, 4326) AS geom
-            FROM novus.v_not_extra_sensitive_points_3006
+            FROM novus.v_not_extra_sensitive_points_3006 p
+            LEFT JOIN novus.novus_full_dataframe n
+              ON n.record = p.record
+             AND n.respid = p.respid
             """,
             con,
             geom_col="geom",
@@ -269,6 +402,8 @@ def non_geometry_columns(gdf: gpd.GeoDataFrame) -> list[str]:
 
 def choose_default_field(gdf: gpd.GeoDataFrame) -> str:
     cols = non_geometry_columns(gdf)
+    if not cols:
+        return gdf.geometry.name
     priorities = ("landskap", "typ", "ltyp", "namn", "name")
     for p in priorities:
         for c in cols:
@@ -364,7 +499,12 @@ def build_map(
     kar: gpd.GeoDataFrame,
     sty_field: str,
     kar_field: str,
+    show_sty: bool = True,
     show_kar: bool = True,
+    lan_boundary: gpd.GeoDataFrame | None = None,
+    show_lan_boundary: bool = False,
+    theme_layers: dict[str, gpd.GeoDataFrame] | None = None,
+    theme_visibility: dict[str, bool] | None = None,
     kommuner: gpd.GeoDataFrame | None = None,
     kommungrupper: gpd.GeoDataFrame | None = None,
     show_kommuner: bool = False,
@@ -383,8 +523,6 @@ def build_map(
     show_landscape_aggregated_points: bool = False,
     wind_turbines: gpd.GeoDataFrame | None = None,
     show_wind_turbines: bool = False,
-    wind_buffer: gpd.GeoDataFrame | None = None,
-    show_wind_buffer: bool = False,
 ) -> folium.Map:
     sty_vals = sty[sty_field].fillna("(saknas)").astype(str).map(_normalize_landscape_type)
     kar_vals = kar[kar_field].fillna("(saknas)").astype(str)
@@ -399,15 +537,186 @@ def build_map(
         val = str(feature["properties"].get("_sty_val", "(saknas)"))
         return {"fillColor": colors.get(val, "#cccccc"), "color": "#444444", "weight": 1.4, "fillOpacity": float(sty_opacity), "opacity": 1}
 
-    folium.GeoJson(sty, name="Landskapstyper", style_function=sty_style, popup=folium.GeoJsonPopup(fields=["_sty_popup"], labels=False)).add_to(m)
+    if show_sty:
+        folium.GeoJson(sty, name="Landskapstyp", style_function=sty_style, popup=folium.GeoJsonPopup(fields=["_sty_popup"], labels=False)).add_to(m)
 
     if show_kar:
+        kar_colors = _palette_map(kar["_kar_val"])
+
+        def kar_style(feature: dict) -> dict:
+            val = str(feature["properties"].get("_kar_val", "(saknas)"))
+            return {
+                "fillColor": kar_colors.get(val, "#94a3b8"),
+                "fillOpacity": 0.2,
+                "color": "#334155",
+                "weight": 0.9,
+                "opacity": 0.7,
+            }
+
         folium.GeoJson(
             kar,
-            name="Landskapskaraktar",
+            name="Landskapskaraktär",
+            style_function=kar_style,
+            popup=folium.GeoJsonPopup(fields=["_kar_popup"], labels=False),
+        ).add_to(m)
+
+    if False and show_kar:
+        folium.GeoJson(
+            kar,
+            name="Landskapskaraktär",
             style_function=lambda _: {"fillOpacity": 0, "color": "#2f2f2f", "weight": 0.9, "opacity": 0.45},
             popup=folium.GeoJsonPopup(fields=["_kar_popup"], labels=False),
         ).add_to(m)
+
+    if show_lan_boundary and lan_boundary is not None and len(lan_boundary) > 0:
+        lan_popup_fields = [c for c in ["lansnamn", "lanskod", "LANSNAMN", "LANSKOD", "name", "id"] if c in lan_boundary.columns]
+        lan_popup_alias = []
+        for c in lan_popup_fields:
+            cl = c.lower()
+            if "namn" in cl or cl == "name":
+                lan_popup_alias.append("Lan")
+            elif "kod" in cl:
+                lan_popup_alias.append("Kod")
+            else:
+                lan_popup_alias.append(c)
+        lan_popup = folium.GeoJsonPopup(fields=lan_popup_fields, aliases=lan_popup_alias, labels=True) if lan_popup_fields else None
+
+        folium.GeoJson(
+            lan_boundary,
+            name="Lansgrans",
+            style_function=lambda _: {"fillOpacity": 0, "color": "#b91c1c", "weight": 3.2, "opacity": 0.98},
+            popup=lan_popup,
+        ).add_to(m)
+
+    if theme_layers:
+        label_by_key = {
+            "rorligt_friluftsliv": "lst.LST_RI_Rorligt_friluftsliv_MB4kap2",
+            "utbyggnad_vindkraft": "Lstw.LstW_Regional_analys_utbyggnad_vindkraft_juni2024",
+            "nature_reserve": "qgis_osm.naturereserve",
+            "kulturmiljovard": "raa.RAA_RI_kulturmiljovard_MB3kap6",
+        }
+        style_by_key = {
+            "rorligt_friluftsliv": {"fillColor": "#0891b2", "fillOpacity": 0.2, "color": "#0e7490", "weight": 1.0, "opacity": 0.9},
+            "utbyggnad_vindkraft": {"fillColor": "#22c55e", "fillOpacity": 0.2, "color": "#15803d", "weight": 1.0, "opacity": 0.9},
+            "nature_reserve": {"fillColor": "#16a34a", "fillOpacity": 0.16, "color": "#166534", "weight": 0.6, "opacity": 0.7},
+            "kulturmiljovard": {"fillColor": "#f59e0b", "fillOpacity": 0.2, "color": "#b45309", "weight": 1.0, "opacity": 0.9},
+        }
+        popup_fields_by_key = {
+            "rorligt_friluftsliv": ["namn"],
+            "utbyggnad_vindkraft": ["Bebyggelse"],
+            "nature_reserve": ["name"],
+            "kulturmiljovard": ["NAMN", "BESKRIVNIN"],
+        }
+        popup_alias_by_key = {
+            "rorligt_friluftsliv": ["Namn"],
+            "utbyggnad_vindkraft": ["Bebyggelse"],
+            "nature_reserve": ["Namn"],
+            "kulturmiljovard": ["Namn", "Beskrivning"],
+        }
+
+        for key, gdf in theme_layers.items():
+            if key in {"landskapstyp", "landskapskaraktar"}:
+                continue
+            if gdf is None or len(gdf) == 0:
+                continue
+            if theme_visibility and not theme_visibility.get(key, False):
+                continue
+
+            requested_fields = popup_fields_by_key.get(key, [])
+            fields = [f for f in requested_fields if f in gdf.columns]
+            aliases = popup_alias_by_key.get(key, ["Info"] * max(1, len(fields)))
+            if not fields:
+                field = choose_default_field(gdf)
+                fields = [field]
+                aliases = ["Info"]
+
+            style_cfg = style_by_key.get(
+                key,
+                {"fillColor": "#64748b", "fillOpacity": 0.16, "color": "#334155", "weight": 1.0, "opacity": 0.9},
+            )
+            smooth_factor = 2.0 if key == "nature_reserve" else None
+            folium.GeoJson(
+                gdf,
+                name=label_by_key.get(key, key),
+                style_function=lambda _, s=style_cfg: s,
+                popup=folium.GeoJsonPopup(fields=fields, aliases=aliases, labels=True),
+                smooth_factor=smooth_factor,
+            ).add_to(m)
+
+    if False and theme_layers:
+        label_by_key = {
+            "rorligt_friluftsliv": "lst.LST_RI_Rorligt_friluftsliv_MB4kap2",
+            "utbyggnad_vindkraft": "Lstw.LstW_Regional_analys_utbyggnad_vindkraft_juni2024",
+            "naturvarden_lst": "Lstw.PG204_naturvarden_kanda_av_lst_dalarna",
+            "kulturmiljovard": "raa.RAA_RI_kulturmiljovard_MB3kap6",
+        }
+        base_color_by_key = {
+            "rorligt_friluftsliv": "#0891b2",
+            "utbyggnad_vindkraft": "#22c55e",
+            "naturvarden_lst": "#16a34a",
+            "kulturmiljovard": "#f59e0b",
+        }
+        for key, gdf in theme_layers.items():
+            if key in {"landskapstyp", "landskapskaraktar"}:
+                continue
+            if gdf is None or len(gdf) == 0:
+                continue
+            if theme_visibility and not theme_visibility.get(key, False):
+                continue
+            field = choose_default_field(gdf)
+            cat_col = f"_{key}_cat"
+            tmp = gdf.copy()
+            tmp[cat_col] = tmp[field].fillna("(saknas)").astype(str)
+            cat_colors = _palette_map(tmp[cat_col])
+
+            def themed_style(
+                feature: dict,
+                category_col: str = cat_col,
+                colors_map: dict[str, str] = cat_colors,
+                fallback: str = base_color_by_key.get(key, "#64748b"),
+            ) -> dict:
+                val = str(feature["properties"].get(category_col, "(saknas)"))
+                clr = colors_map.get(val, fallback)
+                return {"fillColor": clr, "fillOpacity": 0.2, "color": "#334155", "weight": 1.0, "opacity": 0.9}
+
+            folium.GeoJson(
+                tmp,
+                name=label_by_key.get(key, key),
+                style_function=themed_style,
+                popup=folium.GeoJsonPopup(fields=[field], aliases=["Kategori"], labels=True),
+            ).add_to(m)
+
+    if False and theme_layers:
+        style_by_key = {
+            "rorligt_friluftsliv": {"fillColor": "#0891b2", "fillOpacity": 0.18, "color": "#0e7490", "weight": 1.1, "opacity": 0.9},
+            "utbyggnad_vindkraft": {"fillColor": "#22c55e", "fillOpacity": 0.16, "color": "#15803d", "weight": 1.0, "opacity": 0.85},
+            "naturvarden_lst": {"fillColor": "#16a34a", "fillOpacity": 0.16, "color": "#166534", "weight": 1.0, "opacity": 0.85},
+            "kulturmiljovard": {"fillColor": "#f59e0b", "fillOpacity": 0.16, "color": "#b45309", "weight": 1.0, "opacity": 0.9},
+        }
+        label_by_key = {
+            "rorligt_friluftsliv": "Riksintresse för rörligt friluftsliv",
+            "utbyggnad_vindkraft": "Områden för utbyggnad av vindkraft",
+            "naturvarden_lst": "Naturvärden kända av LST Dalarna",
+            "kulturmiljovard": "Riksintresse kulturmiljövård",
+        }
+        for key, gdf in theme_layers.items():
+            if key in {"landskapstyp", "landskapskaraktar"}:
+                continue
+            if gdf is None or len(gdf) == 0:
+                continue
+            if theme_visibility and not theme_visibility.get(key, False):
+                continue
+            field = choose_default_field(gdf)
+            style_cfg = style_by_key.get(
+                key,
+                {"fillColor": "#64748b", "fillOpacity": 0.16, "color": "#334155", "weight": 1.0, "opacity": 0.9},
+            )
+            folium.GeoJson(
+                gdf,
+                name=label_by_key.get(key, key),
+                style_function=lambda _, s=style_cfg: s,
+                popup=folium.GeoJsonPopup(fields=[field], aliases=["Namn"], labels=True),
+            ).add_to(m)
 
     if show_kommuner and kommuner is not None and len(kommuner) > 0:
         folium.GeoJson(
@@ -424,7 +733,7 @@ def build_map(
         def grp_style(feature: dict) -> dict:
             return {
                 "fillColor": feature["properties"].get("_grp_color", "#9ca3af"),
-                "fillOpacity": 0.2,
+                "fillOpacity": 0,
                 "color": "#374151",
                 "weight": 1.2,
                 "opacity": 0.9,
@@ -436,6 +745,8 @@ def build_map(
             style_function=grp_style,
             popup=folium.GeoJsonPopup(fields=["kommungrupp_namn", "kommuner"], aliases=["Grupp", "Kommuner"], labels=True),
         ).add_to(m)
+
+    buffer_sources: list[gpd.GeoDataFrame] = []
 
     if show_plats1_points and plats1_points is not None and len(plats1_points) > 0:
         p1 = plats1_points.copy()
@@ -456,6 +767,7 @@ def build_map(
                 labels=True,
             ),
         ).add_to(m)
+        buffer_sources.append(p1)
 
     if show_plats2_points and plats2_points is not None and len(plats2_points) > 0:
         p2 = plats2_points.copy()
@@ -476,6 +788,7 @@ def build_map(
                 labels=True,
             ),
         ).add_to(m)
+        buffer_sources.append(p2)
 
     if show_sensitive_points and sensitive_points is not None and len(sensitive_points) > 0:
         sp = sensitive_points.copy()
@@ -496,25 +809,7 @@ def build_map(
                 labels=True,
             ),
         ).add_to(m)
-
-        if sensitive_buffer_m > 0:
-            geom_col = sp.geometry.name
-            buffers = sp.to_crs(3006).copy()
-            buffers[geom_col] = buffers.geometry.buffer(float(sensitive_buffer_m))
-            merged = buffers.geometry.unary_union
-            merged_gdf = gpd.GeoDataFrame({"name": ["sensitive_buffer"]}, geometry=[merged], crs=3006)
-            merged_gdf = merged_gdf.to_crs(4326)
-            folium.GeoJson(
-                merged_gdf,
-                name=f"Buffer extra kansliga ({sensitive_buffer_m} m)",
-                style_function=lambda _: {
-                    "fillColor": "#ef4444",
-                    "fillOpacity": 0.12,
-                    "color": "#b91c1c",
-                    "weight": 1,
-                    "opacity": 0.8,
-                },
-            ).add_to(m)
+        buffer_sources.append(sp)
 
     if show_non_sensitive_points and non_sensitive_points is not None and len(non_sensitive_points) > 0:
         nsp = non_sensitive_points.copy()
@@ -534,6 +829,26 @@ def build_map(
                 aliases=["Plats nr", "Kommungrupp", "Kommun", "Kommunkod", "Fritext"],
                 labels=True,
             ),
+        ).add_to(m)
+        buffer_sources.append(nsp)
+
+    if sensitive_buffer_m > 0 and buffer_sources:
+        combo = pd.concat(buffer_sources, ignore_index=True)
+        pts = gpd.GeoDataFrame(combo, geometry="geometry", crs=buffer_sources[0].crs).to_crs(3006)
+        geom_col = pts.geometry.name
+        pts[geom_col] = pts.geometry.buffer(float(sensitive_buffer_m))
+        merged = pts.geometry.unary_union
+        merged_gdf = gpd.GeoDataFrame({"name": ["active_points_buffer"]}, geometry=[merged], crs=3006).to_crs(4326)
+        folium.GeoJson(
+            merged_gdf,
+            name=f"Buffer tanda punktlager ({sensitive_buffer_m} m)",
+            style_function=lambda _: {
+                "fillColor": "#ef4444",
+                "fillOpacity": 0.12,
+                "color": "#b91c1c",
+                "weight": 1,
+                "opacity": 0.8,
+            },
         ).add_to(m)
 
     if show_landscape_colored_points or show_landscape_aggregated_points:
@@ -560,13 +875,15 @@ def build_map(
 
         if show_landscape_aggregated_points and len(summary) > 0:
             agg_layer = folium.FeatureGroup(name="Aggregerade punkter per landskapstyp")
+            max_n = max(1, int(summary["n_points"].max()))
             for _, row in summary.iterrows():
                 pt = row.geometry
                 label = str(row["_sty_val"])
                 n_points = int(row["n_points"])
+                radius = 6 + (20 * ((n_points / max_n) ** 0.5))
                 folium.CircleMarker(
                     location=[pt.y, pt.x],
-                    radius=5,
+                    radius=radius,
                     color="#111827",
                     weight=1,
                     fill=True,
@@ -574,6 +891,18 @@ def build_map(
                     fill_opacity=0.95,
                     popup=folium.Popup(f"Landskapstyp: {label}<br>Antal punkter: {n_points}", max_width=260),
                     tooltip=f"{label}: {n_points}",
+                ).add_to(agg_layer)
+                folium.Marker(
+                    location=[pt.y, pt.x],
+                    icon=folium.DivIcon(
+                        html=(
+                            "<div style='font-size:11px;font-weight:700;color:#111827;"
+                            "white-space:nowrap;text-shadow: 0 0 3px rgba(255,255,255,0.95),"
+                            " 0 0 6px rgba(255,255,255,0.95);"
+                            "transform: translate(-50%, -50%);'>"
+                            f"{label}: {n_points}</div>"
+                        )
+                    ),
                 ).add_to(agg_layer)
             agg_layer.add_to(m)
 
@@ -593,19 +922,6 @@ def build_map(
                 aliases=["VerkID", "Status", "Kommun", "Lan"],
                 labels=True,
             ),
-        ).add_to(m)
-
-    if show_wind_buffer and wind_buffer is not None and len(wind_buffer) > 0:
-        folium.GeoJson(
-            wind_buffer,
-            name="Dalarna + 30 km buffer",
-            style_function=lambda _: {
-                "fillColor": "#16a34a",
-                "fillOpacity": 0.08,
-                "color": "#166534",
-                "weight": 1.2,
-                "opacity": 0.9,
-            },
         ).add_to(m)
 
     folium.LayerControl(collapsed=False).add_to(m)

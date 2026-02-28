@@ -161,11 +161,17 @@ def _load_admin_layers_local(repo: Path) -> tuple[gpd.GeoDataFrame, gpd.GeoDataF
     if not admin_bundle.exists():
         return None
 
-    kommuner = _read_first_layer(admin_bundle, ["kommuner", "kommun", "municipalities"])
+    kommuner = _read_first_layer(admin_bundle, ["kommuner", "kommungrans", "kommungräns", "kommun", "municipalities"])
     kommungrupper = _read_first_layer(admin_bundle, ["kommungrupper", "kommungrupp", "groups"])
     if kommuner is None or kommungrupper is None:
         return None
-    return _normalize_kommuner_schema(kommuner), _normalize_kommungrupper_schema(kommungrupper)
+    kommuner = _normalize_kommuner_schema(kommuner)
+    kommungrupper = _normalize_kommungrupper_schema(kommungrupper)
+
+    # Guard against accidentally exported län-geometry in admin layers.
+    if len(kommuner) <= 1 or len(kommungrupper) <= 1:
+        return None
+    return kommuner, kommungrupper
 
 
 @st.cache_data(show_spinner=False, ttl=300)
