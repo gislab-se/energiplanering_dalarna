@@ -53,6 +53,37 @@ def _read_vector_4326(path: Path, layer: str | None = None, default_crs: int | N
     return gdf.to_crs(4326)
 
 
+def _normalize_lan_boundary_schema(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    if gdf is None or len(gdf) == 0:
+        return gdf
+    out = gdf.copy()
+    cols_lower = {c.lower(): c for c in out.columns}
+
+    if "lansnamn" not in out.columns:
+        source_name = None
+        for k in ["lansnamn", "name", "lan", "namn"]:
+            if k in cols_lower:
+                source_name = cols_lower[k]
+                break
+        if source_name is not None:
+            out["lansnamn"] = out[source_name].astype(str)
+        else:
+            out["lansnamn"] = "Dalarnas lan"
+
+    if "lanskod" not in out.columns:
+        source_code = None
+        for k in ["lanskod", "id", "code", "kod"]:
+            if k in cols_lower:
+                source_code = cols_lower[k]
+                break
+        if source_code is not None:
+            out["lanskod"] = out[source_code].astype(str)
+        else:
+            out["lanskod"] = ""
+
+    return out
+
+
 @st.cache_data(show_spinner=False, ttl=300)
 def _cached_admin_layers():
     return load_admin_layers_from_db()
@@ -61,17 +92,19 @@ def _cached_admin_layers():
 @st.cache_data(show_spinner=False, ttl=300)
 def _cached_lan_boundary():
     try:
-        return load_dalarna_boundary_from_db()
+        return _normalize_lan_boundary_schema(load_dalarna_boundary_from_db())
     except Exception:
         background_bundle = cloud_dir / BACKGROUND_BUNDLE_GPKG
         if background_bundle.exists():
             try:
-                return _read_vector_4326(background_bundle, layer="lan_boundary", default_crs=3006)
+                return _normalize_lan_boundary_schema(
+                    _read_vector_4326(background_bundle, layer="lan_boundary", default_crs=3006)
+                )
             except Exception:
                 pass
         cloud_shp = cloud_dir / "Dalarna lansgrans.shp"
         if cloud_shp.exists():
-            return _read_vector_4326(cloud_shp, default_crs=3006)
+            return _normalize_lan_boundary_schema(_read_vector_4326(cloud_shp, default_crs=3006))
         raise
 
 
