@@ -365,8 +365,28 @@ def _apply_area_filter(
         gid = group_id_by_name.get(area_value)
         if gid is None:
             return gdf.iloc[0:0].copy()
-        col = "home_kommungrupp" if "home_kommungrupp" in gdf.columns else "kommungrupp"
-        out = gdf[_numkey(gdf[col]) == str(gid)]
+        out = None
+        # Prefer deriving group from home_kommunkod -> kommungrupp_id when available.
+        if (
+            filter_mode == "Hemvist (QI)"
+            and "home_kommunkod" in gdf.columns
+            and kommuner is not None
+            and len(kommuner) > 0
+            and "kommunkod" in kommuner.columns
+            and "kommungrupp_id" in kommuner.columns
+        ):
+            km = kommuner[["kommunkod", "kommungrupp_id"]].dropna().drop_duplicates().copy()
+            km["kommunkod_norm"] = _numkey(km["kommunkod"])
+            km["kommungrupp_id_norm"] = _numkey(km["kommungrupp_id"])
+            code_to_gid = dict(zip(km["kommunkod_norm"], km["kommungrupp_id_norm"]))
+            derived_gid = _numkey(gdf["home_kommunkod"]).map(code_to_gid)
+            out = gdf[derived_gid.astype(str) == str(gid)]
+
+        # Fallback to existing group-id field on points.
+        if out is None or len(out) == 0:
+            col = "home_kommungrupp" if "home_kommungrupp" in gdf.columns else "kommungrupp"
+            out = gdf[_numkey(gdf[col]) == str(gid)]
+
         # Fallback when kommungrupp_id mapping is inconsistent between points and polygons.
         if len(out) == 0 and kommungrupper is not None and len(kommungrupper) > 0:
             target = kommungrupper[kommungrupper["kommungrupp_namn"].astype(str) == str(area_value)]
