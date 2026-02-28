@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import inspect
 import os
+import re
 
 import folium
 import geopandas as gpd
@@ -41,6 +42,25 @@ LST_BUNDLE_LAYER_BY_KEY = {
     "utbyggnad_vindkraft": "utbyggnad_vindkraft",
     "nature_reserve": "nature_reserve",
     "kulturmiljovard": "kulturmiljovard",
+}
+
+# Canonical Dalarna grouping for Hemvist (QI) filtering.
+CODE_TO_GROUP_NAME = {
+    "2084": "Avesta, Hedemora, Sater",
+    "2083": "Avesta, Hedemora, Sater",
+    "2082": "Avesta, Hedemora, Sater",
+    "2080": "Falun, Borlange",
+    "2081": "Falun, Borlange",
+    "2023": "Malung-Salen, Alvdalen, Vansbro",
+    "2039": "Malung-Salen, Alvdalen, Vansbro",
+    "2021": "Malung-Salen, Alvdalen, Vansbro",
+    "2062": "Mora, Orsa",
+    "2034": "Mora, Orsa",
+    "2031": "Rattvik, Leksand, Gagnef",
+    "2029": "Rattvik, Leksand, Gagnef",
+    "2026": "Rattvik, Leksand, Gagnef",
+    "2061": "Smedjebacken, Ludvika",
+    "2085": "Smedjebacken, Ludvika",
 }
 
 
@@ -325,6 +345,18 @@ def _numkey(series: pd.Series) -> pd.Series:
     return series.astype(str).str.replace(".0", "", regex=False).str.strip()
 
 
+def _norm_group_name(value: str) -> str:
+    s = str(value).strip().lower()
+    s = (
+        s.replace("å", "a")
+        .replace("ä", "a")
+        .replace("ö", "o")
+        .replace("é", "e")
+    )
+    s = re.sub(r"[^a-z0-9]+", "", s)
+    return s
+
+
 def _db_ready() -> bool:
     return bool(os.getenv("PGDATABASE") and os.getenv("PGUSER") and os.getenv("PGPASSWORD"))
 
@@ -366,6 +398,13 @@ def _apply_area_filter(
         if gid is None:
             return gdf.iloc[0:0].copy()
         out = gdf.iloc[0:0].copy()
+        # For Hemvist (QI): use canonical home kommunkod -> kommungrupp mapping.
+        if filter_mode == "Hemvist (QI)" and "home_kommunkod" in gdf.columns:
+            wanted = _norm_group_name(area_value)
+            allowed_codes = [k for k, grp in CODE_TO_GROUP_NAME.items() if _norm_group_name(grp) == wanted]
+            if allowed_codes:
+                out = gdf[_numkey(gdf["home_kommunkod"]).isin(allowed_codes)]
+                return out
         # Prefer deriving group from home_kommunkod -> kommungrupp_id when available.
         # In Hemvist-lage this should be authoritative; stale home_kommungrupp values can be wrong.
         if (
