@@ -32,6 +32,7 @@ cloud_dir = repo_root / "data" / "cloud"
 
 BACKGROUND_BUNDLE_GPKG = "background_layers.gpkg"
 LST_BUNDLE_GPKG = "lst_layers.gpkg"
+ADMIN_BUNDLE_GPKG = "admin_boundaries.gpkg"
 
 LST_BUNDLE_LAYER_BY_KEY = {
     "landskapstyp": "landskapstyp",
@@ -94,8 +95,68 @@ def _normalize_lan_boundary_schema(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     return out
 
 
+def _pick_col(columns: list[str], candidates: list[str]) -> str | None:
+    lookup = {c.lower(): c for c in columns}
+    for c in candidates:
+        if c.lower() in lookup:
+            return lookup[c.lower()]
+    return None
+
+
+def _normalize_kommuner_schema(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    out = gdf.copy()
+    cols = list(out.columns)
+    name_col = _pick_col(cols, ["kommunnamn", "kommun_namn", "namn", "name"])
+    code_col = _pick_col(cols, ["kommunkod", "kommun_kod", "kod", "id"])
+    if "kommunnamn" not in out.columns:
+        out["kommunnamn"] = out[name_col].astype(str) if name_col else "Kommun"
+    if "kommunkod" not in out.columns:
+        out["kommunkod"] = out[code_col].astype(str) if code_col else ""
+    return out
+
+
+def _normalize_kommungrupper_schema(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    out = gdf.copy()
+    cols = list(out.columns)
+    name_col = _pick_col(cols, ["kommungrupp_namn", "grupp_namn", "namn", "name"])
+    id_col = _pick_col(cols, ["kommungrupp_id", "grupp_id", "id", "kod"])
+    members_col = _pick_col(cols, ["kommuner", "members", "kommunlista"])
+    if "kommungrupp_namn" not in out.columns:
+        out["kommungrupp_namn"] = out[name_col].astype(str) if name_col else "Kommungrupp"
+    if "kommungrupp_id" not in out.columns:
+        out["kommungrupp_id"] = out[id_col].astype(str) if id_col else ""
+    if "kommuner" not in out.columns:
+        out["kommuner"] = out[members_col].astype(str) if members_col else ""
+    return out
+
+
+def _read_first_layer(path: Path, layer_candidates: list[str], default_crs: int = 3006) -> gpd.GeoDataFrame | None:
+    for layer in layer_candidates:
+        try:
+            return _read_vector_4326(path, layer=layer, default_crs=default_crs)
+        except Exception:
+            continue
+    return None
+
+
+def _load_admin_layers_local(repo: Path) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame] | None:
+    admin_bundle = repo / "data" / "cloud" / ADMIN_BUNDLE_GPKG
+    if not admin_bundle.exists():
+        return None
+
+    kommuner = _read_first_layer(admin_bundle, ["kommuner", "kommun", "municipalities"])
+    kommungrupper = _read_first_layer(admin_bundle, ["kommungrupper", "kommungrupp", "groups"])
+    if kommuner is None or kommungrupper is None:
+        return None
+    return _normalize_kommuner_schema(kommuner), _normalize_kommungrupper_schema(kommungrupper)
+
+
 @st.cache_data(show_spinner=False, ttl=300)
-def _cached_admin_layers():
+def _cached_admin_layers(repo_root_str: str):
+    repo = Path(repo_root_str)
+    local = _load_admin_layers_local(repo)
+    if local is not None:
+        return local
     return load_admin_layers_from_db()
 
 
@@ -104,6 +165,11 @@ def _cached_lan_boundary():
     try:
         return _normalize_lan_boundary_schema(load_dalarna_boundary_from_db())
     except Exception:
+        admin_bundle = cloud_dir / ADMIN_BUNDLE_GPKG
+        if admin_bundle.exists():
+            lan_local = _read_first_layer(admin_bundle, ["lan", "lan_boundary", "county", "lansgrans"])
+            if lan_local is not None:
+                return _normalize_lan_boundary_schema(lan_local)
         background_bundle = cloud_dir / BACKGROUND_BUNDLE_GPKG
         if background_bundle.exists():
             try:
@@ -525,7 +591,7 @@ area_mode_options = ["Hela länet", "Samtliga kommuner", "Samtliga kommungrupper
 kommun_code_by_name: dict[str, str] = {}
 group_id_by_name: dict[str, str] = {}
 try:
-    _k, _kg = _cached_admin_layers()
+    _k, _kg = _cached_admin_layers(str(repo_root))
     kp = _k[["kommunnamn", "kommunkod"]].dropna().drop_duplicates().sort_values("kommunnamn")
     gp = _kg[["kommungrupp_namn", "kommungrupp_id"]].dropna().drop_duplicates().sort_values("kommungrupp_namn")
     kommun_code_by_name = {str(r["kommunnamn"]): _numkey(pd.Series([r["kommunkod"]])).iloc[0] for _, r in kp.iterrows()}
@@ -637,9 +703,9 @@ kommuner, kommungrupper, lan_boundary = None, None, None
 if show_kommuner or show_kommungrupper or analysis_enabled or area_kind in {"kommun", "kommungrupp", "all_kommuner", "all_kommungrupper"}:
     if _db_ready():
         try:
-            kommuner, kommungrupper = _cached_admin_layers()
+            kommuner, kommungrupper = _cached_admin_layers(str(repo_root))
         except Exception:
-            st.sidebar.warning("Kunde inte lasa in administrativa lager fran DB.")
+            st.sidebar.warning("Kunde inte lasa in administrativa lager (lokal bundle eller DB).")
             show_kommuner = False
             show_kommungrupper = False
     else:
