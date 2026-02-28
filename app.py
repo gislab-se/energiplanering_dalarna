@@ -366,7 +366,13 @@ def _apply_area_filter(
         if gid is None:
             return gdf.iloc[0:0].copy()
         col = "home_kommungrupp" if "home_kommungrupp" in gdf.columns else "kommungrupp"
-        return gdf[_numkey(gdf[col]) == str(gid)]
+        out = gdf[_numkey(gdf[col]) == str(gid)]
+        # Fallback when kommungrupp_id mapping is inconsistent between points and polygons.
+        if len(out) == 0 and kommungrupper is not None and len(kommungrupper) > 0:
+            target = kommungrupper[kommungrupper["kommungrupp_namn"].astype(str) == str(area_value)]
+            if len(target) > 0:
+                return gdf[gdf.geometry.intersects(target.geometry.unary_union)]
+        return out
 
     return gdf
 
@@ -555,39 +561,48 @@ def _add_analysis_bubbles(m: folium.Map, summary: gpd.GeoDataFrame) -> int:
             except Exception:
                 continue
         fill_color = cat_color.get(label, "#ef4444")
-        radius = 12 + (30 * ((n / max_n) ** 0.5))
+        radius = 20 + (36 * ((n / max_n) ** 0.5))
         folium.CircleMarker(
             location=[pt.y, pt.x],
-            radius=radius + 3,
+            radius=radius + 4,
             color="#ffffff",
-            weight=4,
+            weight=5,
             fill=False,
-            opacity=0.95,
+            opacity=1.0,
         ).add_to(m)
         folium.CircleMarker(
             location=[pt.y, pt.x],
             radius=radius,
             color="#111827",
-            weight=2,
+            weight=3,
             fill=True,
             fill_color=fill_color,
-            fill_opacity=0.8,
+            fill_opacity=0.85,
             tooltip=f"{label}: {n}",
             popup=folium.Popup(f"{label}<br>Antal: {n}", max_width=320),
+        ).add_to(m)
+        folium.CircleMarker(
+            location=[pt.y, pt.x],
+            radius=5,
+            color="#111827",
+            weight=1,
+            fill=True,
+            fill_color="#111827",
+            fill_opacity=1.0,
         ).add_to(m)
         folium.Marker(
             location=[pt.y, pt.x],
             icon=folium.DivIcon(
-                icon_size=(220, 44),
-                icon_anchor=(110, 48),
+                icon_size=(260, 52),
+                icon_anchor=(130, 56),
                 html=(
                     "<div style=\""
-                    "font-size:11px;font-weight:600;color:#111827;"
-                    "background:rgba(255,255,255,0.78);"
-                    "border:1px solid rgba(17,24,39,0.25);border-radius:6px;"
-                    "padding:2px 6px;line-height:1.15;text-align:center;"
-                    "box-shadow:0 1px 3px rgba(0,0,0,0.15);"
-                    "max-width:220px;white-space:normal;"
+                    "font-size:12px;font-weight:700;color:#111827;"
+                    "background:rgba(255,255,255,0.92);"
+                    "border:1px solid rgba(17,24,39,0.35);border-radius:8px;"
+                    "padding:3px 7px;line-height:1.15;text-align:center;"
+                    "box-shadow:0 2px 4px rgba(0,0,0,0.20);"
+                    "max-width:260px;white-space:normal;"
                     "transform: translate(-50%, -108%);"
                     f"\">{label}: {n}</div>"
                 ),
