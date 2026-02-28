@@ -719,14 +719,10 @@ for key, on in [
 
 kommuner, kommungrupper, lan_boundary = None, None, None
 if show_kommuner or show_kommungrupper or analysis_enabled or area_kind in {"kommun", "kommungrupp", "all_kommuner", "all_kommungrupper"}:
-    if _db_ready():
-        try:
-            kommuner, kommungrupper = _cached_admin_layers(str(repo_root))
-        except Exception:
-            st.sidebar.warning("Kunde inte lasa in administrativa lager (lokal bundle eller DB).")
-            show_kommuner = False
-            show_kommungrupper = False
-    else:
+    try:
+        kommuner, kommungrupper = _cached_admin_layers(str(repo_root))
+    except Exception:
+        st.sidebar.warning("Kunde inte lasa in administrativa lager (lokal bundle eller DB).")
         show_kommuner = False
         show_kommungrupper = False
 if show_lan_boundary or analysis_enabled or area_kind == "lan":
