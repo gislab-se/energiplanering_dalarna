@@ -365,7 +365,7 @@ def _apply_area_filter(
         gid = group_id_by_name.get(area_value)
         if gid is None:
             return gdf.iloc[0:0].copy()
-        out = None
+        out = gdf.iloc[0:0].copy()
         # Prefer deriving group from home_kommunkod -> kommungrupp_id when available.
         # In Hemvist-lage this should be authoritative; stale home_kommungrupp values can be wrong.
         if (
@@ -382,20 +382,8 @@ def _apply_area_filter(
             code_to_gid = dict(zip(km["kommunkod_norm"], km["kommungrupp_id_norm"]))
             derived_gid = _numkey(gdf["home_kommunkod"]).map(code_to_gid)
             out = gdf[derived_gid.astype(str) == str(gid)]
-            # If we could derive at least some IDs, do not fallback to possibly stale group fields.
-            if derived_gid.notna().any():
-                if len(out) == 0 and kommungrupper is not None and len(kommungrupper) > 0:
-                    target = kommungrupper[kommungrupper["kommungrupp_namn"].astype(str) == str(area_value)]
-                    if len(target) > 0:
-                        return gdf.iloc[0:0].copy()
-                return out
-
-        # Fallback to existing group-id field on points.
-        if out is None or len(out) == 0:
-            col = "home_kommungrupp" if "home_kommungrupp" in gdf.columns else "kommungrupp"
-            out = gdf[_numkey(gdf[col]) == str(gid)]
-
-        # Fallback when kommungrupp_id mapping is inconsistent between points and polygons.
+        # No fallback to stale home_kommungrupp/kommungrupp fields.
+        # If mapping via home_kommunkod is unavailable, use spatial fallback.
         if len(out) == 0 and kommungrupper is not None and len(kommungrupper) > 0:
             target = kommungrupper[kommungrupper["kommungrupp_namn"].astype(str) == str(area_value)]
             if len(target) > 0:
