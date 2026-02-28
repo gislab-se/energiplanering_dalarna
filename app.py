@@ -92,18 +92,13 @@ def _normalize_lan_boundary_schema(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         else:
             out["lanskod"] = ""
 
-    # Keep only polygon/line geometries for boundary rendering.
+    # Keep only polygon/line geometries for boundary rendering/analysis.
     # Point geometries render as a blue marker in Folium, which is not desired here.
     gtype = out.geometry.geom_type.astype(str)
     keep = gtype.isin(["Polygon", "MultiPolygon", "LineString", "MultiLineString"])
     out = out[keep].copy()
     if len(out) == 0:
         return out
-
-    # Convert polygon geometries to boundaries for a clear länsgräns line.
-    poly_mask = out.geometry.geom_type.astype(str).isin(["Polygon", "MultiPolygon"])
-    if poly_mask.any():
-        out.loc[poly_mask, "geometry"] = out.loc[poly_mask].geometry.boundary
 
     return out
 
