@@ -48,8 +48,18 @@ def _read_vector_4326(path: Path, layer: str | None = None, default_crs: int | N
         gdf = gpd.read_file(path, layer=layer)
     else:
         gdf = gpd.read_file(path)
-    if gdf.crs is None and default_crs is not None:
-        gdf = gdf.set_crs(default_crs)
+    if gdf.crs is None:
+        # If CRS metadata is missing, infer likely CRS from coordinate ranges.
+        # This avoids "invisible layer" when data is already WGS84 but treated as SWEREF99.
+        minx, miny, maxx, maxy = gdf.total_bounds
+        looks_like_wgs84 = (
+            -180.0 <= minx <= 180.0
+            and -180.0 <= maxx <= 180.0
+            and -90.0 <= miny <= 90.0
+            and -90.0 <= maxy <= 90.0
+        )
+        inferred = 4326 if looks_like_wgs84 else (default_crs or 3006)
+        gdf = gdf.set_crs(inferred)
     return gdf.to_crs(4326)
 
 
