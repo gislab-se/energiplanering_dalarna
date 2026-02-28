@@ -538,6 +538,8 @@ def _analysis_summary(
 def _add_analysis_bubbles(m: folium.Map, summary: gpd.GeoDataFrame) -> int:
     if summary is None or len(summary) == 0:
         return 0
+    # Draw in a dedicated high-z pane so bubbles stay visible above dense point layers.
+    folium.map.CustomPane("analysis_bubbles", z_index=690).add_to(m)
     max_n = max(1, int(summary["n"].max()))
     palette = ["#ef4444", "#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16"]
     cats = [str(x) for x in summary["kategori"].astype(str).unique().tolist()]
@@ -558,6 +560,15 @@ def _add_analysis_bubbles(m: folium.Map, summary: gpd.GeoDataFrame) -> int:
         radius = 12 + (30 * ((n / max_n) ** 0.5))
         folium.CircleMarker(
             location=[pt.y, pt.x],
+            radius=radius + 3,
+            color="#ffffff",
+            weight=4,
+            fill=False,
+            opacity=0.95,
+            pane="analysis_bubbles",
+        ).add_to(m)
+        folium.CircleMarker(
+            location=[pt.y, pt.x],
             radius=radius,
             color="#111827",
             weight=2,
@@ -566,6 +577,7 @@ def _add_analysis_bubbles(m: folium.Map, summary: gpd.GeoDataFrame) -> int:
             fill_opacity=0.8,
             tooltip=f"{label}: {n}",
             popup=folium.Popup(f"{label}<br>Antal: {n}", max_width=320),
+            pane="analysis_bubbles",
         ).add_to(m)
         folium.Marker(
             location=[pt.y, pt.x],
@@ -584,6 +596,7 @@ def _add_analysis_bubbles(m: folium.Map, summary: gpd.GeoDataFrame) -> int:
                     f"\">{label}: {n}</div>"
                 ),
             ),
+            pane="analysis_bubbles",
         ).add_to(m)
         drawn += 1
     return drawn
@@ -665,6 +678,36 @@ elif selected_area.startswith("Kommun: "):
     area_kind, area_value = "kommun", selected_area.replace("Kommun: ", "", 1)
 else:
     area_kind, area_value = "kommungrupp", selected_area.replace("Kommungrupp: ", "", 1)
+
+
+def _analysis_scope_label(kind: str, value: str) -> str:
+    if kind == "lan":
+        return "hela länet"
+    if kind == "all_kommuner":
+        return "samtliga kommuner"
+    if kind == "all_kommungrupper":
+        return "samtliga kommungrupper"
+    if kind == "kommun":
+        return f"kommun: {value}"
+    if kind == "kommungrupp":
+        return f"kommungrupp: {value}"
+    return kind
+
+
+if analysis_enabled:
+    mismatch = False
+    if show_kommungrupper and area_kind not in {"kommungrupp", "all_kommungrupper"}:
+        mismatch = True
+    if show_kommuner and area_kind not in {"kommun", "all_kommuner"}:
+        mismatch = True
+    if show_lan_boundary and area_kind != "lan":
+        mismatch = True
+    if mismatch:
+        with right_col:
+            st.info(
+                "OBS: Analysen styrs av Arbetsområde, inte av vilka bakgrundslager som visas. "
+                f"Nu används: {_analysis_scope_label(area_kind, area_value)}."
+            )
 
 active_point_labels: list[str] = []
 if show_plats1_points:
