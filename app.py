@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 import inspect
 import importlib.util
-import os
 import re
 import sys
+import unicodedata
 
 import folium
 import geopandas as gpd
@@ -15,12 +15,15 @@ import streamlit.components.v1 as components
 from streamlit_folium import folium_static
 from shapely.geometry import Point
 
+_mf_path = Path(__file__).resolve().parent / "scripts" / "map_factory.py"
 try:
     import scripts.map_factory as map_factory
+    imported_path = Path(getattr(map_factory, "__file__", "")).resolve()
+    if imported_path != _mf_path.resolve():
+        raise ImportError(f"Resolved unexpected scripts.map_factory path: {imported_path}")
 except Exception:
     # Streamlit Cloud may resolve "scripts" to a non-local namespace.
-    # Fallback: load local scripts/map_factory.py directly.
-    _mf_path = Path(__file__).resolve().parent / "scripts" / "map_factory.py"
+    # Force loading local scripts/map_factory.py when that happens.
     if str(_mf_path.parent.parent) not in sys.path:
         sys.path.insert(0, str(_mf_path.parent.parent))
     _spec = importlib.util.spec_from_file_location("local_map_factory", _mf_path)
@@ -31,12 +34,7 @@ except Exception:
 
 build_map = map_factory.build_map
 choose_default_field = map_factory.choose_default_field
-load_admin_layers_from_db = map_factory.load_admin_layers_from_db
-load_dalarna_boundary_from_db = map_factory.load_dalarna_boundary_from_db
-load_layers = map_factory.load_layers
 load_wind_turbines_dalarna_buffer = map_factory.load_wind_turbines_dalarna_buffer
-load_plats_layers_from_db = map_factory.load_plats_layers_from_db
-load_sensitivity_layers_from_db = map_factory.load_sensitivity_layers_from_db
 
 
 st.set_page_config(page_title="Energiomstallning i Dalarna", layout="wide")
@@ -45,9 +43,9 @@ st.title("Energiomstallning i Dalarna")
 repo_root = Path(__file__).resolve().parent
 cloud_dir = repo_root / "data" / "cloud"
 
-BACKGROUND_BUNDLE_GPKG = "background_layers.gpkg"
 LST_BUNDLE_GPKG = "lst_layers.gpkg"
 ADMIN_BUNDLE_GPKG = "admin_boundaries.gpkg"
+LOCKED_POINTS_GPKG = "novus_locked_points.gpkg"
 
 LST_BUNDLE_LAYER_BY_KEY = {
     "landskapstyp": "landskapstyp",
@@ -76,6 +74,66 @@ CODE_TO_GROUP_NAME = {
     "2061": "Smedjebacken, Ludvika",
     "2085": "Smedjebacken, Ludvika",
 }
+CODE_TO_GROUP_ID = {
+    "2084": "6",
+    "2083": "6",
+    "2082": "6",
+    "2080": "3",
+    "2081": "3",
+    "2023": "1",
+    "2039": "1",
+    "2021": "1",
+    "2062": "5",
+    "2034": "5",
+    "2031": "2",
+    "2029": "2",
+    "2026": "2",
+    "2061": "4",
+    "2085": "4",
+}
+
+
+REQUIRED_CLOUD_FILES = [
+    LOCKED_POINTS_GPKG,
+    ADMIN_BUNDLE_GPKG,
+    LST_BUNDLE_GPKG,
+]
+REQUIRED_GPKG_LAYERS = {
+    LOCKED_POINTS_GPKG: {"plats_1", "plats_2", "plats_3_sensitive", "plats_4_not_sensitive"},
+    ADMIN_BUNDLE_GPKG: {"lan", "kommuner", "kommungrupper"},
+    LST_BUNDLE_GPKG: set(LST_BUNDLE_LAYER_BY_KEY.values()),
+}
+
+
+def _validate_cloud_foundation() -> list[str]:
+    problems: list[str] = []
+    for file_name in REQUIRED_CLOUD_FILES:
+        path = cloud_dir / file_name
+        if not path.exists():
+            problems.append(f"Missing file: data/cloud/{file_name}")
+            continue
+
+        try:
+            available_layers = set(gpd.list_layers(path)["name"].astype(str).tolist())
+        except Exception as exc:
+            problems.append(f"Could not read layers in data/cloud/{file_name}: {exc}")
+            continue
+
+        required_layers = REQUIRED_GPKG_LAYERS.get(file_name, set())
+        missing_layers = sorted(required_layers - available_layers)
+        if missing_layers:
+            problems.append(
+                f"Missing layers in data/cloud/{file_name}: {', '.join(missing_layers)}"
+            )
+    return problems
+
+
+foundation_errors = _validate_cloud_foundation()
+if foundation_errors:
+    st.error("Cloud foundation is incomplete. App requires exactly 3 GPKG bundles.")
+    for msg in foundation_errors:
+        st.error(msg)
+    st.stop()
 
 
 def _read_vector_4326(path: Path, layer: str | None = None, default_crs: int | None = None) -> gpd.GeoDataFrame:
@@ -176,182 +234,154 @@ def _normalize_kommungrupper_schema(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     return out
 
 
-def _read_first_layer(path: Path, layer_candidates: list[str], default_crs: int = 3006) -> gpd.GeoDataFrame | None:
-    for layer in layer_candidates:
-        try:
-            return _read_vector_4326(path, layer=layer, default_crs=default_crs)
-        except Exception:
-            continue
-    return None
-
-
-def _load_admin_layers_local(repo: Path) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame] | None:
+def _load_admin_layers_local(repo: Path) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
     admin_bundle = repo / "data" / "cloud" / ADMIN_BUNDLE_GPKG
-    if not admin_bundle.exists():
-        return None
-
-    kommuner = _read_first_layer(admin_bundle, ["kommuner", "kommungrans", "kommungräns", "kommun", "municipalities"])
-    kommungrupper = _read_first_layer(admin_bundle, ["kommungrupper", "kommungrupp", "groups"])
-    if kommuner is None or kommungrupper is None:
-        return None
+    kommuner = _read_vector_4326(admin_bundle, layer="kommuner", default_crs=3006)
+    kommungrupper = _read_vector_4326(admin_bundle, layer="kommungrupper", default_crs=3006)
     kommuner = _normalize_kommuner_schema(kommuner)
     kommungrupper = _normalize_kommungrupper_schema(kommungrupper)
-
-    # Guard against accidentally exported län-geometry in admin layers.
-    if len(kommuner) <= 1 or len(kommungrupper) <= 1:
-        return None
     return kommuner, kommungrupper
 
 
 @st.cache_data(show_spinner=False, ttl=300)
 def _cached_admin_layers(repo_root_str: str):
     repo = Path(repo_root_str)
-    local = _load_admin_layers_local(repo)
-    if local is not None:
-        return local
-    return load_admin_layers_from_db()
+    return _load_admin_layers_local(repo)
 
 
 @st.cache_data(show_spinner=False, ttl=300)
 def _cached_lan_boundary():
-    try:
-        return _normalize_lan_boundary_schema(load_dalarna_boundary_from_db())
-    except Exception:
-        admin_bundle = cloud_dir / ADMIN_BUNDLE_GPKG
-        if admin_bundle.exists():
-            lan_local = _read_first_layer(admin_bundle, ["lan", "lan_boundary", "county", "lansgrans"])
-            if lan_local is not None:
-                return _normalize_lan_boundary_schema(lan_local)
-        background_bundle = cloud_dir / BACKGROUND_BUNDLE_GPKG
-        if background_bundle.exists():
-            try:
-                return _normalize_lan_boundary_schema(
-                    _read_vector_4326(background_bundle, layer="lan_boundary", default_crs=3006)
-                )
-            except Exception:
-                pass
-        cloud_shp = cloud_dir / "Dalarna lansgrans.shp"
-        if cloud_shp.exists():
-            return _normalize_lan_boundary_schema(_read_vector_4326(cloud_shp, default_crs=3006))
-        raise
+    admin_bundle = cloud_dir / ADMIN_BUNDLE_GPKG
+    return _normalize_lan_boundary_schema(
+        _read_vector_4326(admin_bundle, layer="lan", default_crs=3006)
+    )
 
 
 @st.cache_data(show_spinner=False, ttl=300)
 def _cached_base_layers(repo_root_str: str):
     repo = Path(repo_root_str)
     lst_bundle = repo / "data" / "cloud" / LST_BUNDLE_GPKG
-    if lst_bundle.exists():
-        try:
-            return (
-                _read_vector_4326(lst_bundle, layer=LST_BUNDLE_LAYER_BY_KEY["landskapstyp"], default_crs=3006),
-                _read_vector_4326(lst_bundle, layer=LST_BUNDLE_LAYER_BY_KEY["landskapskaraktar"], default_crs=3006),
-            )
-        except Exception:
-            pass
-    cloud_sty = repo / "data" / "cloud" / "lst_landskapstyper.gpkg"
-    cloud_kar = repo / "data" / "cloud" / "lst_landskapskaraktar.gpkg"
-    if cloud_sty.exists() and cloud_kar.exists():
-        return _read_vector_4326(cloud_sty, default_crs=3006), _read_vector_4326(cloud_kar, default_crs=3006)
-    return load_layers(repo)
+    return (
+        _read_vector_4326(lst_bundle, layer=LST_BUNDLE_LAYER_BY_KEY["landskapstyp"], default_crs=3006),
+        _read_vector_4326(lst_bundle, layer=LST_BUNDLE_LAYER_BY_KEY["landskapskaraktar"], default_crs=3006),
+    )
 
 
 @st.cache_data(show_spinner=False, ttl=300)
 def _cached_theme_layer(repo_root_str: str, key: str):
     repo = Path(repo_root_str)
     lst_bundle = repo / "data" / "cloud" / LST_BUNDLE_GPKG
-    if key in LST_BUNDLE_LAYER_BY_KEY and lst_bundle.exists():
-        try:
-            return _read_vector_4326(lst_bundle, layer=LST_BUNDLE_LAYER_BY_KEY[key], default_crs=3006)
-        except Exception:
-            pass
-    cloud_map = {
-        "nature_reserve": "nature_reserve_dalarna_light.gpkg",
-        "rorligt_friluftsliv": "lst_rorligt_friluftsliv.gpkg",
-        "utbyggnad_vindkraft": "lst_utbyggnad_vindkraft.gpkg",
-        "kulturmiljovard": "lst_kulturmiljovard.gpkg",
-        "landskapstyp": "lst_landskapstyper.gpkg",
-        "landskapskaraktar": "lst_landskapskaraktar.gpkg",
-    }
-    if key in cloud_map:
-        cloud_path = repo / "data" / "cloud" / cloud_map[key]
-        if cloud_path.exists():
-            return _read_vector_4326(cloud_path, default_crs=3006)
-    if hasattr(map_factory, "load_theme_layer"):
-        return map_factory.load_theme_layer(repo, key)
-    if hasattr(map_factory, "load_theme_layers"):
-        return map_factory.load_theme_layers(repo)[key]
-    raise AttributeError("Neither load_theme_layer nor load_theme_layers exists in scripts.map_factory")
+    if key not in LST_BUNDLE_LAYER_BY_KEY:
+        raise KeyError(f"Unknown layer key: {key}")
+    return _read_vector_4326(lst_bundle, layer=LST_BUNDLE_LAYER_BY_KEY[key], default_crs=3006)
+
+
+def _locked_points_gpkg_path(repo_root_str: str) -> Path:
+    return Path(repo_root_str) / "data" / "cloud" / LOCKED_POINTS_GPKG
+
+
+def _file_cache_token(path: Path) -> str:
+    if not path.exists():
+        return f"{path}:missing"
+    stp = path.stat()
+    return f"{path}:{stp.st_mtime_ns}:{stp.st_size}"
+
+
+def _locked_points_cache_token(repo_root_str: str) -> str:
+    return _file_cache_token(_locked_points_gpkg_path(repo_root_str))
 
 
 @st.cache_data(show_spinner=False, ttl=300)
-def _cached_plats_layers():
-    return load_plats_layers_from_db()
+def _cached_locked_point_layers(repo_root_str: str, cache_token: str):
+    _ = cache_token
+    gpkg = _locked_points_gpkg_path(repo_root_str)
+    admin_bundle = Path(repo_root_str) / "data" / "cloud" / ADMIN_BUNDLE_GPKG
 
+    code_to_name: dict[str, str] = {}
+    code_to_gid: dict[str, str] = {}
+    try:
+        km = _read_vector_4326(admin_bundle, layer="kommuner", default_crs=3006)
+        if "kommunkod" in km.columns and "kommunnamn" in km.columns:
+            code_to_name = dict(
+                zip(
+                    _numkey(km["kommunkod"]),
+                    km["kommunnamn"].astype("string").fillna("").astype(str),
+                )
+            )
+        if "kommunkod" in km.columns and "kommungrupp_id" in km.columns:
+            code_to_gid = dict(zip(_numkey(km["kommunkod"]), _numkey(km["kommungrupp_id"])))
+    except Exception:
+        code_to_name = {}
+        code_to_gid = {}
+    if not code_to_gid:
+        code_to_gid = CODE_TO_GROUP_ID
 
-@st.cache_data(show_spinner=False, ttl=300)
-def _cached_sensitivity_layers():
-    return load_sensitivity_layers_from_db()
-
-
-@st.cache_data(show_spinner=False, ttl=300)
-def _cached_locked_point_layers(repo_root_str: str):
-    repo = Path(repo_root_str)
-    gpkg = repo / "data" / "cloud" / "novus_locked_points.gpkg"
-    if not gpkg.exists():
-        gpkg = repo / "data" / "processed" / "locked_layers" / "novus_locked_points.gpkg"
-    if not gpkg.exists():
-        return None
     plats1 = gpd.read_file(gpkg, layer="plats_1").to_crs(4326)
     plats2 = gpd.read_file(gpkg, layer="plats_2").to_crs(4326)
     sensitive = gpd.read_file(gpkg, layer="plats_3_sensitive").to_crs(4326)
     non_sensitive = gpd.read_file(gpkg, layer="plats_4_not_sensitive").to_crs(4326)
 
-    # Add respondent home fields so Q1/QI filtering behaves the same as DB-backed layers.
-    csv_path = repo / "data" / "interim" / "novus" / "novus_full_dataframe.csv"
-    if csv_path.exists():
-        def _norm_key(series: pd.Series) -> pd.Series:
-            return series.astype(str).str.replace(".0", "", regex=False).str.strip()
+    def _pick_string_series(out: gpd.GeoDataFrame, candidates: list[str]) -> pd.Series:
+        for c in candidates:
+            if c in out.columns:
+                return out[c].astype("string")
+        return pd.Series([pd.NA] * len(out), index=out.index, dtype="string")
 
-        base = pd.read_csv(csv_path, usecols=["Record", "respid", "Q1", "Kommungrupp"])
-        base["record_key"] = _norm_key(base["Record"])
-        base["respid_key"] = base["respid"].astype(str).str.strip()
-        base = base.rename(columns={"Q1": "home_kommunkod", "Kommungrupp": "home_kommungrupp"})
-        # Canonical current grouping from Q1 (kommunkod), independent of stale Kommungrupp in source.
-        base["home_kommunkod_norm"] = _norm_key(base["home_kommunkod"])
-        base["home_kommungrupp_current"] = base["home_kommunkod_norm"].map(CODE_TO_GROUP_NAME)
-        home_cols = base[["record_key", "respid_key", "home_kommunkod", "home_kommungrupp"]].drop_duplicates()
-        home_cols_current = base[
-            ["record_key", "respid_key", "home_kommunkod", "home_kommungrupp", "home_kommungrupp_current"]
-        ].drop_duplicates()
-        # Secondary lookup by respid only (when record ids differ between sources).
-        by_respid = (
-            base[["respid_key", "home_kommunkod", "home_kommungrupp", "home_kommungrupp_current"]]
-            .dropna(subset=["respid_key"])
-            .drop_duplicates()
+    def _normalize_point_schema(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        if gdf is None or len(gdf) == 0:
+            return gdf
+        out = gdf.copy()
+
+        resp_code = _numkey(
+            _pick_string_series(out, ["resp_kom", "home_kommunkod", "Q1", "q1", "hemvist_q1", "hemvist_kommunkod"])
         )
+        coord_code = _numkey(_pick_string_series(out, ["coord_kom", "kommunkod", "admin_2_kod"]))
 
-        def _attach_home(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-            if gdf is None or len(gdf) == 0:
-                return gdf
-            out = gdf.copy()
-            out["record_key"] = _norm_key(out["record"])
-            out["respid_key"] = out["respid"].astype(str).str.strip()
-            out = out.merge(home_cols_current, on=["record_key", "respid_key"], how="left")
-            miss = out["home_kommunkod"].isna() | (out["home_kommunkod"].astype(str).str.strip() == "")
-            if miss.any():
-                fill = out.loc[miss, ["respid_key"]].merge(by_respid, on="respid_key", how="left")
-                out.loc[miss, "home_kommunkod"] = fill["home_kommunkod"].values
-                out.loc[miss, "home_kommungrupp"] = fill["home_kommungrupp"].values
-                out.loc[miss, "home_kommungrupp_current"] = fill["home_kommungrupp_current"].values
-            return out.drop(columns=["record_key", "respid_key"])
+        out["resp_kom"] = resp_code.where(resp_code.ne(""), pd.NA)
+        out["coord_kom"] = coord_code.where(coord_code.ne(""), pd.NA)
+        out["home_kommunkod"] = out["resp_kom"]
+        out["Q1"] = out["resp_kom"]
+        out["kommunkod"] = out["coord_kom"]
 
-        plats1 = _attach_home(plats1)
-        plats2 = _attach_home(plats2)
-        sensitive = _attach_home(sensitive)
-        non_sensitive = _attach_home(non_sensitive)
+        resp_gid_from_col = _numkey(_pick_string_series(out, ["resp_komgrp", "home_kommungrupp_id_current", "home_kommungrupp_id"]))
+        derived_home_gid = _numkey(out["home_kommunkod"]).map(code_to_gid)
+        home_gid = resp_gid_from_col.where(resp_gid_from_col.ne(""), derived_home_gid)
+        out["home_kommungrupp_id_current"] = home_gid.where(home_gid.ne(""), pd.NA)
+
+        derived_home_gname = _numkey(out["home_kommunkod"]).map(CODE_TO_GROUP_NAME)
+        out["home_kommungrupp_current"] = derived_home_gname.where(derived_home_gname.ne(""), pd.NA)
+        out["home_kommungrupp"] = out["home_kommungrupp_current"]
+
+        coord_gid = _numkey(out["coord_kom"]).map(code_to_gid)
+        out["coord_kommungrupp_id_current"] = coord_gid.where(coord_gid.ne(""), pd.NA)
+        coord_gname = _numkey(out["coord_kom"]).map(CODE_TO_GROUP_NAME)
+        out["coord_kommungrupp_current"] = coord_gname.where(coord_gname.ne(""), pd.NA)
+
+        if "admin_2" in out.columns:
+            old_name = out["admin_2"].astype("string")
+        else:
+            old_name = pd.Series([pd.NA] * len(out), index=out.index, dtype="string")
+        mapped_name = _numkey(out["kommunkod"]).map(code_to_name)
+        out["admin_2"] = old_name.where(old_name.fillna("").str.strip() != "", mapped_name)
+
+        if "kommungrupp" in out.columns:
+            old_grp = out["kommungrupp"].astype("string")
+        else:
+            old_grp = pd.Series([pd.NA] * len(out), index=out.index, dtype="string")
+        out["kommungrupp"] = old_grp.where(old_grp.fillna("").str.strip() != "", out["home_kommungrupp_id_current"])
+
+        for c in ["plats_nr", "plats_fritext", "record", "respid", "lat", "lon"]:
+            if c not in out.columns:
+                out[c] = pd.NA
+
+        return out
+
+    plats1 = _normalize_point_schema(plats1)
+    plats2 = _normalize_point_schema(plats2)
+    sensitive = _normalize_point_schema(sensitive)
+    non_sensitive = _normalize_point_schema(non_sensitive)
 
     return plats1, plats2, sensitive, non_sensitive
-
 
 @st.cache_data(show_spinner=False, ttl=600)
 def _cached_wind_layers(repo_root_str: str, buffer_m: int):
@@ -374,7 +404,13 @@ def _build_map_compat(**kwargs):
 
 
 def _numkey(series: pd.Series) -> pd.Series:
-    return series.astype(str).str.replace(".0", "", regex=False).str.strip()
+    out = (
+        series.astype("string")
+        .str.replace(".0", "", regex=False)
+        .str.replace(",0", "", regex=False)
+        .str.strip()
+    )
+    return out.fillna("")
 
 
 def _norm_group_name(value: str) -> str:
@@ -389,8 +425,10 @@ def _norm_group_name(value: str) -> str:
     return s
 
 
-def _db_ready() -> bool:
-    return bool(os.getenv("PGDATABASE") and os.getenv("PGUSER") and os.getenv("PGPASSWORD"))
+def _norm_group_name_safe(value: str) -> str:
+    s = unicodedata.normalize("NFKD", str(value))
+    s = s.encode("ascii", "ignore").decode("ascii").strip().lower()
+    return re.sub(r"[^a-z0-9]+", "", s)
 
 
 def _apply_area_filter(
@@ -406,65 +444,94 @@ def _apply_area_filter(
     if gdf is None or len(gdf) == 0 or area_kind in {"lan", "all_kommuner", "all_kommungrupper"}:
         return gdf
 
-    # Spatial filter mode: clip points by selected polygon geometry.
-    if filter_mode == "Koordinatlage (spatialt)":
-        target = None
-        if area_kind == "kommun" and kommuner is not None and len(kommuner) > 0:
-            target = kommuner[kommuner["kommunnamn"].astype(str) == str(area_value)]
-        elif area_kind == "kommungrupp" and kommungrupper is not None and len(kommungrupper) > 0:
-            target = kommungrupper[kommungrupper["kommungrupp_namn"].astype(str) == str(area_value)]
-        if target is None or len(target) == 0:
-            return gdf.iloc[0:0].copy()
-        return gdf[gdf.geometry.intersects(target.geometry.unary_union)]
+    def _first_existing_col(candidates: list[str]) -> str | None:
+        for c in candidates:
+            if c in gdf.columns:
+                return c
+        return None
 
-    # Hemvist (QI): filter by respondent home, not point location.
+    code_to_gid: dict[str, str] = {}
+    if (
+        kommuner is not None
+        and len(kommuner) > 0
+        and "kommunkod" in kommuner.columns
+        and "kommungrupp_id" in kommuner.columns
+    ):
+        km = kommuner[["kommunkod", "kommungrupp_id"]].dropna().drop_duplicates().copy()
+        km["kommunkod_norm"] = _numkey(km["kommunkod"])
+        km["kommungrupp_id_norm"] = _numkey(km["kommungrupp_id"])
+        code_to_gid = dict(zip(km["kommunkod_norm"], km["kommungrupp_id_norm"]))
+    if not code_to_gid:
+        code_to_gid = CODE_TO_GROUP_ID
+
+    # Spatial filter mode: filter by coordinate municipality code (coord_kom), not polygon clip.
+    if filter_mode == "Koordinatlage (spatialt)":
+        if area_kind == "kommun":
+            code = kommun_code_by_name.get(area_value)
+            if code is None:
+                return gdf.iloc[0:0].copy()
+            coord_col = _first_existing_col(["coord_kom", "kommunkod"])
+            if coord_col is None:
+                return gdf.iloc[0:0].copy()
+            return gdf[_numkey(gdf[coord_col]) == str(code)]
+
+        if area_kind == "kommungrupp":
+            gid = group_id_by_name.get(area_value)
+            if gid is None:
+                return gdf.iloc[0:0].copy()
+            gid_norm = str(gid)
+
+            if "coord_kommungrupp_id_current" in gdf.columns:
+                coord_gid = _numkey(gdf["coord_kommungrupp_id_current"])
+                if (coord_gid.str.len() > 0).any():
+                    return gdf[coord_gid == gid_norm]
+
+            coord_col = _first_existing_col(["coord_kom", "kommunkod"])
+            if coord_col is None:
+                return gdf.iloc[0:0].copy()
+            derived_gid = _numkey(gdf[coord_col]).map(code_to_gid)
+            return gdf[derived_gid.astype(str) == gid_norm]
+
+        return gdf.iloc[0:0].copy()
+
+    # Hemvist (QI): filter by respondent home (resp_kom), not point location.
     if area_kind == "kommun":
         code = kommun_code_by_name.get(area_value)
         if code is None:
             return gdf.iloc[0:0].copy()
-        col = "home_kommunkod" if "home_kommunkod" in gdf.columns else None
-        if col is None:
+        home_col = _first_existing_col(["resp_kom", "home_kommunkod", "Q1", "q1", "hemvist_q1", "hemvist_kommunkod"])
+        if home_col is None:
             return gdf.iloc[0:0].copy()
-        return gdf[_numkey(gdf[col]) == str(code)]
+        return gdf[_numkey(gdf[home_col]) == str(code)]
 
     if area_kind == "kommungrupp":
         gid = group_id_by_name.get(area_value)
         if gid is None:
             return gdf.iloc[0:0].copy()
-        out = gdf.iloc[0:0].copy()
-        # Preferred field when available (derived from Q1 with canonical mapping).
-        if filter_mode == "Hemvist (QI)" and "home_kommungrupp_current" in gdf.columns:
-            wanted = _norm_group_name(area_value)
-            curr = gdf["home_kommungrupp_current"].fillna("").astype(str).map(_norm_group_name)
-            has_curr = curr.str.len() > 0
-            if has_curr.any():
-                out = gdf[curr == wanted]
+        gid_norm = str(gid)
+
+        # Primary: explicit current group-id field on points.
+        if "home_kommungrupp_id_current" in gdf.columns:
+            gid_col = _numkey(gdf["home_kommungrupp_id_current"])
+            if (gid_col.str.len() > 0).any():
+                return gdf[gid_col == gid_norm]
+
+        # Secondary: derive kommungrupp from resp_kom/home_kommunkod.
+        home_code_col = _first_existing_col(["resp_kom", "home_kommunkod", "Q1", "q1", "hemvist_q1", "hemvist_kommunkod"])
+        if home_code_col is not None:
+            derived_gid = _numkey(gdf[home_code_col]).map(code_to_gid)
+            out = gdf[derived_gid.astype(str) == gid_norm]
+            if len(out) > 0 or derived_gid.notna().any():
                 return out
-        # For Hemvist (QI): use canonical home kommunkod -> kommungrupp mapping.
-        if filter_mode == "Hemvist (QI)" and "home_kommunkod" in gdf.columns:
-            wanted = _norm_group_name(area_value)
-            allowed_codes = [k for k, grp in CODE_TO_GROUP_NAME.items() if _norm_group_name(grp) == wanted]
-            if allowed_codes:
-                out = gdf[_numkey(gdf["home_kommunkod"]).isin(allowed_codes)]
-                return out
-        # Prefer deriving group from home_kommunkod -> kommungrupp_id when available.
-        # In Hemvist-lage this should be authoritative; stale home_kommungrupp values can be wrong.
-        if (
-            filter_mode == "Hemvist (QI)"
-            and "home_kommunkod" in gdf.columns
-            and kommuner is not None
-            and len(kommuner) > 0
-            and "kommunkod" in kommuner.columns
-            and "kommungrupp_id" in kommuner.columns
-        ):
-            km = kommuner[["kommunkod", "kommungrupp_id"]].dropna().drop_duplicates().copy()
-            km["kommunkod_norm"] = _numkey(km["kommunkod"])
-            km["kommungrupp_id_norm"] = _numkey(km["kommungrupp_id"])
-            code_to_gid = dict(zip(km["kommunkod_norm"], km["kommungrupp_id_norm"]))
-            derived_gid = _numkey(gdf["home_kommunkod"]).map(code_to_gid)
-            out = gdf[derived_gid.astype(str) == str(gid)]
-        # No fallback to stale home_kommungrupp/kommungrupp fields and no spatial fallback in Hemvist mode.
-        return out
+
+        # Secondary: use current group-name field when present.
+        if "home_kommungrupp_current" in gdf.columns:
+            wanted = _norm_group_name_safe(area_value)
+            curr = gdf["home_kommungrupp_current"].fillna("").astype(str).map(_norm_group_name_safe)
+            if (curr.str.len() > 0).any():
+                return gdf[curr == wanted]
+
+        return gdf.iloc[0:0].copy()
 
     return gdf
 
@@ -723,16 +790,13 @@ def _add_lst_zone_overlay(m: folium.Map, zone: gpd.GeoDataFrame | None) -> None:
 area_mode_options = ["Hela länet", "Samtliga kommuner", "Samtliga kommungrupper"]
 kommun_code_by_name: dict[str, str] = {}
 group_id_by_name: dict[str, str] = {}
-try:
-    _k, _kg = _cached_admin_layers(str(repo_root))
-    kp = _k[["kommunnamn", "kommunkod"]].dropna().drop_duplicates().sort_values("kommunnamn")
-    gp = _kg[["kommungrupp_namn", "kommungrupp_id"]].dropna().drop_duplicates().sort_values("kommungrupp_namn")
-    kommun_code_by_name = {str(r["kommunnamn"]): _numkey(pd.Series([r["kommunkod"]])).iloc[0] for _, r in kp.iterrows()}
-    group_id_by_name = {str(r["kommungrupp_namn"]): _numkey(pd.Series([r["kommungrupp_id"]])).iloc[0] for _, r in gp.iterrows()}
-    area_mode_options += [f"Kommun: {x}" for x in kommun_code_by_name.keys()]
-    area_mode_options += [f"Kommungrupp: {x}" for x in group_id_by_name.keys()]
-except Exception:
-    pass
+_k, _kg = _cached_admin_layers(str(repo_root))
+kp = _k[["kommunnamn", "kommunkod"]].dropna().drop_duplicates().sort_values("kommunnamn")
+gp = _kg[["kommungrupp_namn", "kommungrupp_id"]].dropna().drop_duplicates().sort_values("kommungrupp_namn")
+kommun_code_by_name = {str(r["kommunnamn"]): _numkey(pd.Series([r["kommunkod"]])).iloc[0] for _, r in kp.iterrows()}
+group_id_by_name = {str(r["kommungrupp_namn"]): _numkey(pd.Series([r["kommungrupp_id"]])).iloc[0] for _, r in gp.iterrows()}
+area_mode_options += [f"Kommun: {x}" for x in kommun_code_by_name.keys()]
+area_mode_options += [f"Kommungrupp: {x}" for x in group_id_by_name.keys()]
 
 with st.sidebar:
     st.header("Kartinstallningar")
@@ -740,7 +804,7 @@ with st.sidebar:
     filter_mode = st.selectbox("Filtergrund", ["Hemvist (QI)", "Koordinatlage (spatialt)"], index=0)
     if filter_mode == "Hemvist (QI)":
         st.caption(
-            "Hemvist (QI): For kommun och kommungrupp visas punkter fran respondenter som bor i valt arbetsomrade (Q1). "
+            "Hemvist (QI): For kommun och kommungrupp visas punkter fran respondenter som bor i valt arbetsomrade (resp_kom). "
             "Punkterna kan ligga var som helst i lanet."
         )
 
@@ -764,7 +828,8 @@ with st.sidebar:
     show_non_sensitive_points = st.checkbox("Visa inte extra kansliga punkter", value=False)
 
     st.subheader("Vind")
-    show_wind_turbines = st.checkbox("Visa vindkraftverk (Dalarna + 30 km)", value=False)
+    st.caption("Vindlager är avstängt i cloud-only-läge.")
+    show_wind_turbines = False
 
 main_col, right_col = st.columns([4.8, 1.2], gap="medium")
 with right_col:
@@ -846,13 +911,8 @@ else:
 sty, kar = _empty_gdf(), _empty_gdf()
 sty_field, kar_field = "geometry", "geometry"
 if show_sty or show_kar:
-    try:
-        sty, kar = _cached_base_layers(str(repo_root))
-        sty_field, kar_field = choose_default_field(sty), choose_default_field(kar)
-    except Exception:
-        st.sidebar.warning("Kunde inte lasa in landskapstyper/landskapskaraktar fran lokala datafiler i deployment.")
-        show_sty = False
-        show_kar = False
+    sty, kar = _cached_base_layers(str(repo_root))
+    sty_field, kar_field = choose_default_field(sty), choose_default_field(kar)
 
 theme_layers: dict[str, gpd.GeoDataFrame] = {}
 for key, on in [
@@ -862,49 +922,64 @@ for key, on in [
     ("kulturmiljovard", show_kulturmiljovard),
 ]:
     if on:
-        try:
-            theme_layers[key] = _cached_theme_layer(str(repo_root), key)
-        except Exception:
-            st.sidebar.warning(f"Kunde inte lasa in lagret: {key}")
+        theme_layers[key] = _cached_theme_layer(str(repo_root), key)
 
 kommuner, kommungrupper, lan_boundary = None, None, None
 if show_kommuner or show_kommungrupper or analysis_enabled or area_kind in {"kommun", "kommungrupp", "all_kommuner", "all_kommungrupper"}:
-    try:
-        kommuner, kommungrupper = _cached_admin_layers(str(repo_root))
-    except Exception:
-        st.sidebar.warning("Kunde inte lasa in administrativa lager (lokal bundle eller DB).")
-        show_kommuner = False
-        show_kommungrupper = False
+    kommuner, kommungrupper = _cached_admin_layers(str(repo_root))
 if show_lan_boundary or analysis_enabled or area_kind == "lan":
-    try:
-        lan_boundary = _cached_lan_boundary()
-        if lan_boundary is None or len(lan_boundary) == 0:
-            st.sidebar.warning("Länsgräns-lagret saknar polygon/linje-geometri.")
-            show_lan_boundary = False
-    except Exception:
-        st.sidebar.warning("Kunde inte läsa in länsgräns.")
-        show_lan_boundary = False
+    lan_boundary = _cached_lan_boundary()
+    if lan_boundary is None or len(lan_boundary) == 0:
+        raise RuntimeError("admin_boundaries.gpkg: lan layer is empty or invalid.")
 
 plats1_points = plats2_points = sensitive_points = non_sensitive_points = None
 if show_plats1_points or show_plats2_points or show_sensitive_points or show_non_sensitive_points or analysis_enabled:
-    locked_layers = _cached_locked_point_layers(str(repo_root))
-    if locked_layers is not None:
-        plats1_points, plats2_points, sensitive_points, non_sensitive_points = locked_layers
-    else:
-        try:
-            plats1_points, plats2_points = _cached_plats_layers()
-            sensitive_points, non_sensitive_points = _cached_sensitivity_layers()
-        except Exception:
-            st.sidebar.warning("Kunde inte lasa in punktlager fran DB och inga lasa lager hittades lokalt.")
-            show_plats1_points = False
-            show_plats2_points = False
-            show_sensitive_points = False
-            show_non_sensitive_points = False
+    locked_cache_token = _locked_points_cache_token(str(repo_root))
+    locked_layers = _cached_locked_point_layers(str(repo_root), locked_cache_token)
+    plats1_points, plats2_points, sensitive_points, non_sensitive_points = locked_layers
+
+    def _has_home_values(gdf: gpd.GeoDataFrame | None) -> bool:
+        if gdf is None or len(gdf) == 0:
+            return False
+        for c in ["resp_kom", "home_kommunkod", "Q1", "q1", "hemvist_q1", "hemvist_kommunkod", "home_kommungrupp_id_current"]:
+            if c in gdf.columns:
+                vals = gdf[c].astype("string").str.strip().fillna("")
+                if vals.ne("").any():
+                    return True
+        return False
+
+    if filter_mode == "Hemvist (QI)" and area_kind in {"kommun", "kommungrupp"}:
+        has_home = any(
+            _has_home_values(g)
+            for g in [plats1_points, plats2_points, sensitive_points, non_sensitive_points]
+        )
+        if not has_home:
+            st.warning(
+                "Hemvist (QI) saknar hemvistfalt i punktlagret. "
+                "Bygg om `novus_locked_points.gpkg` med `resp_kom` och helst "
+                "`home_kommungrupp_id_current`."
+            )
 
     plats1_points = _apply_area_filter(plats1_points, filter_mode, area_kind, area_value, kommun_code_by_name, group_id_by_name, kommuner, kommungrupper)
     plats2_points = _apply_area_filter(plats2_points, filter_mode, area_kind, area_value, kommun_code_by_name, group_id_by_name, kommuner, kommungrupper)
     sensitive_points = _apply_area_filter(sensitive_points, filter_mode, area_kind, area_value, kommun_code_by_name, group_id_by_name, kommuner, kommungrupper)
     non_sensitive_points = _apply_area_filter(non_sensitive_points, filter_mode, area_kind, area_value, kommun_code_by_name, group_id_by_name, kommuner, kommungrupper)
+
+    if filter_mode == "Hemvist (QI)" and area_kind in {"kommun", "kommungrupp"}:
+        active_counts = []
+        if show_plats1_points:
+            active_counts.append(len(plats1_points) if plats1_points is not None else 0)
+        if show_plats2_points:
+            active_counts.append(len(plats2_points) if plats2_points is not None else 0)
+        if show_sensitive_points:
+            active_counts.append(len(sensitive_points) if sensitive_points is not None else 0)
+        if show_non_sensitive_points:
+            active_counts.append(len(non_sensitive_points) if non_sensitive_points is not None else 0)
+        if active_counts and sum(active_counts) == 0:
+            st.warning(
+                "Hemvist-filter gav 0 träffar för valt arbetsområde. "
+                "Om du nyss byggt om `novus_locked_points.gpkg`, starta om appen eller vänta 5 minuter så cache uppdateras."
+            )
 
 wind_turbines = None
 if show_wind_turbines:
