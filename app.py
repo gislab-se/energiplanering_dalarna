@@ -105,6 +105,19 @@ REQUIRED_GPKG_LAYERS = {
 }
 
 
+def _list_vector_layers(path: Path) -> set[str]:
+    if hasattr(gpd, "list_layers"):
+        layers_df = gpd.list_layers(path)
+        if "name" in layers_df.columns:
+            return set(layers_df["name"].astype(str).tolist())
+    try:
+        import fiona
+
+        return {str(name) for name in fiona.listlayers(str(path))}
+    except Exception as exc:
+        raise RuntimeError(exc) from exc
+
+
 def _validate_cloud_foundation() -> list[str]:
     problems: list[str] = []
     for file_name in REQUIRED_CLOUD_FILES:
@@ -114,7 +127,7 @@ def _validate_cloud_foundation() -> list[str]:
             continue
 
         try:
-            available_layers = set(gpd.list_layers(path)["name"].astype(str).tolist())
+            available_layers = _list_vector_layers(path)
         except Exception as exc:
             problems.append(f"Could not read layers in data/cloud/{file_name}: {exc}")
             continue
