@@ -808,6 +808,10 @@ with st.sidebar:
     show_lan_boundary = st.checkbox("Visa länsgräns", value=False)
     show_kommungrupper = st.checkbox("Visa kommungrupper", value=False)
     show_kommuner = st.checkbox("Visa kommungräns", value=False)
+    if hasattr(st, "toggle"):
+        satellite_base = st.toggle("Satellitbakgrund", value=False)
+    else:
+        satellite_base = st.checkbox("Satellitbakgrund", value=False)
 
     st.subheader("Lager från Länsstyrelsens geodatakatalog")
     show_sty = st.checkbox("Landskapstyper.lst", value=False)
@@ -1026,6 +1030,7 @@ m = _build_map_compat(
     show_landscape_aggregated_points=False,
     wind_turbines=wind_turbines,
     show_wind_turbines=show_wind_turbines,
+    satellite_base=satellite_base,
 )
 
 if analysis_enabled:

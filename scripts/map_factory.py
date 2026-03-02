@@ -523,6 +523,7 @@ def build_map(
     show_landscape_aggregated_points: bool = False,
     wind_turbines: gpd.GeoDataFrame | None = None,
     show_wind_turbines: bool = False,
+    satellite_base: bool = False,
 ) -> folium.Map:
     sty_vals = sty[sty_field].fillna("(saknas)").astype(str).map(_normalize_landscape_type)
     kar_vals = kar[kar_field].fillna("(saknas)").astype(str)
@@ -531,7 +532,23 @@ def build_map(
 
     colors = _palette_map(sty["_sty_val"])
     centroid = sty.unary_union.centroid
-    m = folium.Map(location=[centroid.y, centroid.x], zoom_start=8, tiles="CartoDB positron")
+    m = folium.Map(location=[centroid.y, centroid.x], zoom_start=8, tiles=None)
+    folium.TileLayer(
+        tiles="CartoDB positron",
+        name="Bakgrund: Ljus karta",
+        overlay=False,
+        control=True,
+        show=not satellite_base,
+    ).add_to(m)
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr="Tiles © Esri, Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+        name="Bakgrund: Satellit",
+        overlay=False,
+        control=True,
+        show=satellite_base,
+        max_zoom=19,
+    ).add_to(m)
 
     def sty_style(feature: dict) -> dict:
         val = str(feature["properties"].get("_sty_val", "(saknas)"))
