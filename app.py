@@ -37,8 +37,8 @@ choose_default_field = map_factory.choose_default_field
 load_wind_turbines_dalarna_buffer = map_factory.load_wind_turbines_dalarna_buffer
 
 
-st.set_page_config(page_title="Energiomstallning i Dalarna", layout="wide")
-st.title("Energiomstallning i Dalarna")
+st.set_page_config(page_title="Energiomställning i Dalarna", layout="wide")
+st.title("Energiomställning i Dalarna")
 
 repo_root = Path(__file__).resolve().parent
 cloud_dir = repo_root / "data" / "cloud"
@@ -478,7 +478,7 @@ def _apply_area_filter(
         code_to_gid = CODE_TO_GROUP_ID
 
     # Spatial filter mode: filter by coordinate municipality code (coord_kom), not polygon clip.
-    if filter_mode == "Koordinatlage (spatialt)":
+    if filter_mode == "Koordinatläge (spatialt)":
         if area_kind == "kommun":
             code = kommun_code_by_name.get(area_value)
             if code is None:
@@ -592,8 +592,8 @@ def _analysis_points(
     by_name = {
         "Plats 1": (plats1_points, show_plats1_points),
         "Plats 2": (plats2_points, show_plats2_points),
-        "Extra kansliga": (sensitive_points, show_sensitive_points),
-        "Inte extra kansliga": (non_sensitive_points, show_non_sensitive_points),
+        "Extra känsliga": (sensitive_points, show_sensitive_points),
+        "Inte extra känsliga": (non_sensitive_points, show_non_sensitive_points),
     }
     selected: list[gpd.GeoDataFrame] = []
 
@@ -812,19 +812,19 @@ area_mode_options += [f"Kommun: {x}" for x in kommun_code_by_name.keys()]
 area_mode_options += [f"Kommungrupp: {x}" for x in group_id_by_name.keys()]
 
 with st.sidebar:
-    st.header("Kartinstallningar")
-    selected_area = st.selectbox("Arbetsomrade", area_mode_options, index=0)
-    filter_mode = st.selectbox("Filtergrund", ["Hemvist (QI)", "Koordinatlage (spatialt)"], index=0)
+    st.header("Kartinställningar")
+    selected_area = st.selectbox("Arbetsområde", area_mode_options, index=0)
+    filter_mode = st.selectbox("Filtergrund", ["Hemvist (QI)", "Koordinatläge (spatialt)"], index=0)
     if filter_mode == "Hemvist (QI)":
         st.caption(
-            "Hemvist (QI): For kommun och kommungrupp visas punkter fran respondenter som bor i valt arbetsomrade (resp_kom). "
-            "Punkterna kan ligga var som helst i lanet."
+            "Hemvist (QI): För kommun och kommungrupp visas punkter från respondenter som bor i valt arbetsområde (resp_kom). "
+            "Punkterna kan ligga var som helst i länet."
         )
 
     st.subheader("Bakgrund")
     show_lan_boundary = st.checkbox("Visa länsgräns", value=False)
     show_kommungrupper = st.checkbox("Visa kommungrupper", value=False)
-    show_kommuner = st.checkbox("Visa kommungrans", value=False)
+    show_kommuner = st.checkbox("Visa kommungräns", value=False)
 
     st.subheader("Lager från Länsstyrelsens geodatakatalog")
     show_sty = st.checkbox("Landskapstyper.lst", value=False)
@@ -835,10 +835,10 @@ with st.sidebar:
     show_kulturmiljovard = st.checkbox("Kulturmiljövård.lst", value=False)
 
     st.subheader("Punktlager")
-    show_plats1_points = st.checkbox("Visa Plats 1-punkter (farg efter kommungrupp)", value=True)
-    show_plats2_points = st.checkbox("Visa Plats 2-punkter (farg efter kommungrupp)", value=False)
-    show_sensitive_points = st.checkbox("Visa extra kansliga punkter", value=False)
-    show_non_sensitive_points = st.checkbox("Visa inte extra kansliga punkter", value=False)
+    show_plats1_points = st.checkbox("Visa Plats 1-punkter (färg efter kommungrupp)", value=True)
+    show_plats2_points = st.checkbox("Visa Plats 2-punkter (färg efter kommungrupp)", value=False)
+    show_sensitive_points = st.checkbox("Visa extra känsliga punkter", value=False)
+    show_non_sensitive_points = st.checkbox("Visa inte extra känsliga punkter", value=False)
 
     st.subheader("Vind")
     st.caption("Vindlager är avstängt i cloud-only-läge.")
@@ -846,12 +846,12 @@ with st.sidebar:
 
 main_col, right_col = st.columns([4.8, 1.2], gap="medium")
 with right_col:
-    st.subheader("Punktbuffer")
-    point_buffer_m = st.slider("Buffer runt tanda punktlager (meter)", 0, 3000, 0, 100, key="point_buffer_right")
+    st.subheader("Punktbuffert")
+    point_buffer_m = st.slider("Buffert runt tända punktlager (meter)", 0, 3000, 0, 100, key="point_buffer_right")
     st.subheader("Analys")
     analysis_enabled = st.checkbox("Aktivera analys", value=False)
-    analysis_metric = st.selectbox("Matt", ["Punkter", "Unika respondenter"], index=0)
-    analysis_near_m = st.slider("Narhetszon runt valt LST-lager (meter)", 0, 3000, 0, 50)
+    analysis_metric = st.selectbox("Mått", ["Punkter", "Unika respondenter"], index=0)
+    analysis_near_m = st.slider("Närhetszon runt valt LST-lager (meter)", 0, 3000, 0, 50)
 
 if selected_area == "Hela länet":
     area_kind, area_value = "lan", ""
@@ -900,9 +900,9 @@ if show_plats1_points:
 if show_plats2_points:
     active_point_labels.append("Plats 2")
 if show_sensitive_points:
-    active_point_labels.append("extra kansliga")
+    active_point_labels.append("extra känsliga")
 if show_non_sensitive_points:
-    active_point_labels.append("inte extra kansliga")
+    active_point_labels.append("inte extra känsliga")
 if len(active_point_labels) == 0:
     q_points = "aktiva punktlager"
 elif len(active_point_labels) == 1:
@@ -968,7 +968,7 @@ if show_plats1_points or show_plats2_points or show_sensitive_points or show_non
         )
         if not has_home:
             st.warning(
-                "Hemvist (QI) saknar hemvistfalt i punktlagret. "
+                "Hemvist (QI) saknar hemvistfält i punktlagret. "
                 "Bygg om `novus_locked_points.gpkg` med `resp_kom` och helst "
                 "`home_kommungrupp_id_current`."
             )
@@ -999,7 +999,7 @@ if show_wind_turbines:
     try:
         wind_turbines, _ = _cached_wind_layers(str(repo_root), 30000)
     except Exception:
-        st.sidebar.warning("Kunde inte lasa in vindkraftverk i deployment.")
+        st.sidebar.warning("Kunde inte läsa in vindkraftverk i deployment.")
         show_wind_turbines = False
 
 # Compatibility guard for older build_map implementations that always derive map center from `sty`.
@@ -1069,10 +1069,10 @@ if analysis_enabled:
     analysis_blocked_multi_lst = False
     with right_col:
         if len(lst_active_layers) > 1:
-            st.warning("Analysen stoder max ett LST-lager at gangen. Slack till ett lager for maskad analys.")
+            st.warning("Analysen stöder max ett LST-lager åt gången. Släck till ett lager för maskad analys.")
             analysis_blocked_multi_lst = True
         elif len(lst_active_layers) == 1:
-            st.caption("Analyslage: arbetsomrade + 1 aktivt LST-lager.")
+            st.caption("Analysläge: arbetsområde + 1 aktivt LST-lager.")
             selected_key, selected_lst_layer, selected_field = lst_active_layers[0]
             if selected_field is not None and selected_field in selected_lst_layer.columns:
                 vals = (
@@ -1095,15 +1095,15 @@ if analysis_enabled:
                         ].copy()
                         st.caption(f"Kategori: {selected_cat}")
         else:
-            st.caption("Analyslage: endast arbetsomrade (inget aktivt LST-lager).")
+            st.caption("Analysläge: endast arbetsområde (inget aktivt LST-lager).")
 
     if analysis_blocked_multi_lst:
-        q_suffix = " utan LST-mask (flera LST-lager ar tanda)"
+        q_suffix = " utan LST-mask (flera LST-lager är tända)"
     elif selected_lst_layer is None:
         q_suffix = ""
     else:
         q_suffix = " inom valt LST-lager"
-    st.caption(f"Fragga: Hur manga {q_points.lower()} finns i {q_area}{q_suffix}? Svaret visas i kartan.")
+    st.caption(f"Fråga: Hur många {q_points.lower()} finns i {q_area}{q_suffix}? Svaret visas i kartan.")
 
     if analysis_blocked_multi_lst:
         summary = gpd.GeoDataFrame(columns=["kategori", "n", "geometry"], geometry="geometry", crs=4326)
@@ -1117,13 +1117,13 @@ if analysis_enabled:
         bubbles_drawn = _add_analysis_bubbles(m, summary)
     with right_col:
         if analysis_blocked_multi_lst:
-            st.caption("Analys pausad: valj hogst ett LST-lager.")
+            st.caption("Analys pausad: välj högst ett LST-lager.")
         elif summary is not None and len(summary) > 0:
-            st.caption(f"Analysen visar {analysis_metric.lower()} i {len(summary)} arbetsomrade(n). Summa n: {int(summary['n'].sum())}.")
+            st.caption(f"Analysen visar {analysis_metric.lower()} i {len(summary)} arbetsområde(n). Summa n: {int(summary['n'].sum())}.")
             if bubbles_drawn == 0:
                 st.warning("Analysresultat finns men bubblor kunde inte ritas (geometriproblem).")
         else:
-            st.caption("Ingen traff i analysen med nuvarande val.")
+            st.caption("Ingen träff i analysen med nuvarande val.")
 
 with main_col:
     try:

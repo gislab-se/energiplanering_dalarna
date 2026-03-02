@@ -583,7 +583,7 @@ def build_map(
 
         folium.GeoJson(
             lan_boundary,
-            name="Lansgrans",
+            name="Länsgräns",
             style_function=lambda _: {"fillOpacity": 0, "color": "#b91c1c", "weight": 3.2, "opacity": 0.98},
             popup=lan_popup,
         ).add_to(m)
@@ -795,7 +795,7 @@ def build_map(
         sp["_grp_color"] = sp["kommungrupp"].map(_group_color)
         folium.GeoJson(
             sp,
-            name="Extra kansliga punkter",
+            name="Extra känsliga punkter",
             marker=folium.CircleMarker(radius=4, weight=1, color="#7f1d1d", fill=True, fill_opacity=0.9),
             style_function=lambda f: {
                 "fillColor": f["properties"].get("_grp_color", "#9ca3af"),
@@ -816,7 +816,7 @@ def build_map(
         nsp["_grp_color"] = nsp["kommungrupp"].map(_group_color)
         folium.GeoJson(
             nsp,
-            name="Inte extra kansliga punkter",
+            name="Inte extra känsliga punkter",
             marker=folium.CircleMarker(radius=4, weight=1, color="#1e3a8a", fill=True, fill_opacity=0.9),
             style_function=lambda f: {
                 "fillColor": f["properties"].get("_grp_color", "#9ca3af"),
@@ -841,7 +841,7 @@ def build_map(
         merged_gdf = gpd.GeoDataFrame({"name": ["active_points_buffer"]}, geometry=[merged], crs=3006).to_crs(4326)
         folium.GeoJson(
             merged_gdf,
-            name=f"Buffer tanda punktlager ({sensitive_buffer_m} m)",
+            name=f"Buffert tända punktlager ({sensitive_buffer_m} m)",
             style_function=lambda _: {
                 "fillColor": "#ef4444",
                 "fillOpacity": 0.12,
@@ -868,7 +868,7 @@ def build_map(
                 },
                 popup=folium.GeoJsonPopup(
                     fields=["_source", "_sty_val", "plats_nr", "kommungrupp", "admin_2", "kommunkod"],
-                    aliases=["Kalla", "Landskapstyp", "Plats nr", "Kommungrupp", "Kommun", "Kommunkod"],
+                    aliases=["Källa", "Landskapstyp", "Plats nr", "Kommungrupp", "Kommun", "Kommunkod"],
                     labels=True,
                 ),
             ).add_to(m)
