@@ -755,45 +755,29 @@ def _add_analysis_bubbles(m: folium.Map, summary: gpd.GeoDataFrame) -> int:
         radius = 20 + (36 * ((n / max_n) ** 0.5))
         folium.CircleMarker(
             location=[pt.y, pt.x],
-            radius=radius + 4,
-            color="#ffffff",
-            weight=5,
-            fill=False,
-            opacity=1.0,
-        ).add_to(m)
-        folium.CircleMarker(
-            location=[pt.y, pt.x],
             radius=radius,
-            color="transparent",
-            weight=0,
+            color="#9ca3af",
+            weight=1.2,
             fill=True,
             fill_color=fill_color,
             fill_opacity=0.85,
             tooltip=f"{label}: {n}",
             popup=folium.Popup(f"{label}<br>Antal: {n}", max_width=320),
         ).add_to(m)
-        folium.CircleMarker(
-            location=[pt.y, pt.x],
-            radius=5,
-            color="#111827",
-            weight=1,
-            fill=True,
-            fill_color="#111827",
-            fill_opacity=1.0,
-        ).add_to(m)
         folium.Marker(
             location=[pt.y, pt.x],
             icon=folium.DivIcon(
-                icon_size=(260, 52),
-                icon_anchor=(130, 56),
+                icon_size=(1, 1),
+                icon_anchor=(0, 0),
                 html=(
                     "<div style=\""
+                    "display:inline-block;"
                     "font-size:12px;font-weight:700;color:#111827;"
                     "background:rgba(255,255,255,0.92);"
                     "border:1px solid rgba(17,24,39,0.35);border-radius:8px;"
                     "padding:3px 7px;line-height:1.15;text-align:center;"
                     "box-shadow:0 2px 4px rgba(0,0,0,0.20);"
-                    "max-width:260px;white-space:normal;"
+                    "white-space:nowrap;"
                     "transform: translate(-50%, -108%);"
                     f"\">{label}: {n}</div>"
                 ),
