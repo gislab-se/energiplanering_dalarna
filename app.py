@@ -687,29 +687,9 @@ def _analysis_summary(
     counts = joined.groupby("kategori").size().rename("n").reset_index()
     out = u_join.merge(counts, on="kategori", how="left")
     out["n"] = out["n"].fillna(0).astype(int)
-    # Bubble position:
-    # - if a category has hits, place bubble at centroid of the hit points (more visible/contextual)
-    # - else fallback to analysis-unit representative point
-    rep = gpd.GeoSeries(out.geometry, crs=3006).representative_point()
-    center_by_cat: dict[str, object] = {}
-    if len(joined) > 0:
-        j = gpd.GeoDataFrame(joined[["kategori", "geometry"]].copy(), geometry="geometry", crs=3006)
-        for cat, grp in j.groupby("kategori"):
-            try:
-                c = grp.geometry.unary_union.centroid
-                if c is not None and not getattr(c, "is_empty", False):
-                    center_by_cat[str(cat)] = c
-            except Exception:
-                pass
-
-    new_geom = []
-    for i, row in out.iterrows():
-        cat = str(row["kategori"])
-        g = center_by_cat.get(cat)
-        if g is None or getattr(g, "is_empty", False):
-            g = rep.iloc[i]
-        new_geom.append(g)
-    out["geometry"] = new_geom
+    # Keep one stable bubble position per analysis unit (arbetsomrade),
+    # regardless of active LST mask. LST changes count `n`, not bubble placement.
+    out["geometry"] = gpd.GeoSeries(out.geometry, crs=3006).representative_point()
     return gpd.GeoDataFrame(out, geometry="geometry", crs=3006).to_crs(4326)
 
 
