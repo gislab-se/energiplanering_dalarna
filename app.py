@@ -720,6 +720,25 @@ def _add_analysis_bubbles(m: folium.Map, summary: gpd.GeoDataFrame) -> int:
     palette = ["#ef4444", "#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16"]
     cats = [str(x) for x in summary["kategori"].astype(str).unique().tolist()]
     cat_color = {c: palette[i % len(palette)] for i, c in enumerate(cats)}
+
+    # Keep kommungrupp bubble colors consistent with point/group palette when category labels match.
+    group_palette = getattr(
+        map_factory,
+        "GROUP_PALETTE",
+        {1: "#4e79a7", 2: "#f28e2b", 3: "#59a14f", 4: "#e15759", 5: "#76b7b2", 6: "#af7aa1"},
+    )
+    gid_by_name = globals().get("group_id_by_name", {})
+    gid_by_name_norm = {_norm_group_name_safe(str(k)): str(v) for k, v in gid_by_name.items()}
+
+    def _bubble_color(label: str) -> str:
+        gid = gid_by_name_norm.get(_norm_group_name_safe(label))
+        if gid:
+            try:
+                return group_palette.get(int(float(gid)), cat_color.get(label, "#ef4444"))
+            except Exception:
+                pass
+        return cat_color.get(label, "#ef4444")
+
     drawn = 0
     for _, row in summary.iterrows():
         n = int(row["n"])
@@ -732,7 +751,7 @@ def _add_analysis_bubbles(m: folium.Map, summary: gpd.GeoDataFrame) -> int:
                 pt = pt.representative_point()
             except Exception:
                 continue
-        fill_color = cat_color.get(label, "#ef4444")
+        fill_color = _bubble_color(label)
         radius = 20 + (36 * ((n / max_n) ** 0.5))
         folium.CircleMarker(
             location=[pt.y, pt.x],
@@ -745,8 +764,8 @@ def _add_analysis_bubbles(m: folium.Map, summary: gpd.GeoDataFrame) -> int:
         folium.CircleMarker(
             location=[pt.y, pt.x],
             radius=radius,
-            color="#111827",
-            weight=3,
+            color="transparent",
+            weight=0,
             fill=True,
             fill_color=fill_color,
             fill_opacity=0.85,
