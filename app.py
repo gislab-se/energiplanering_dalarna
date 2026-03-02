@@ -834,11 +834,12 @@ with st.sidebar:
     show_nature_reserve = st.checkbox("Naturreservat.osm", value=False)
     show_kulturmiljovard = st.checkbox("Kulturmiljövård.lst", value=False)
 
-    st.subheader("Punktlager")
-    show_plats1_points = st.checkbox("Visa Plats 1-punkter (färg efter kommungrupp)", value=True)
-    show_plats2_points = st.checkbox("Visa Plats 2-punkter (färg efter kommungrupp)", value=False)
-    show_sensitive_points = st.checkbox("Visa extra känsliga punkter", value=False)
-    show_non_sensitive_points = st.checkbox("Visa inte extra känsliga punkter", value=False)
+    st.subheader("Betydelsefulla platser")
+    st.caption("Färg visar kommungrupp.")
+    show_plats1_points = st.checkbox("Vald plats 1", value=True)
+    show_plats2_points = st.checkbox("Vald plats 2", value=False)
+    show_sensitive_points = st.checkbox("Valda platser som är extra känsliga för ny infrastruktur", value=False)
+    show_non_sensitive_points = st.checkbox("Valda platser som INTE är känsliga för ny infrastruktur", value=False)
 
     st.subheader("Vind")
     st.caption("Vindlager är avstängt i cloud-only-läge.")

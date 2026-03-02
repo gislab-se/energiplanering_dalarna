@@ -753,12 +753,12 @@ def build_map(
         p1["_grp_color"] = p1["kommungrupp"].map(_group_color)
         folium.GeoJson(
             p1,
-            name="Plats 1-punkter",
-            marker=folium.CircleMarker(radius=4, weight=1, color="#1f2937", fill=True, fill_opacity=0.8),
+            name="Vald plats 1",
+            marker=folium.CircleMarker(radius=5, weight=0, color="transparent", fill=True, fill_opacity=0.8),
             style_function=lambda f: {
                 "fillColor": f["properties"].get("_grp_color", "#9ca3af"),
-                "color": "#1f2937",
-                "weight": 1,
+                "color": "transparent",
+                "weight": 0,
                 "fillOpacity": 0.85,
             },
             popup=folium.GeoJsonPopup(
@@ -774,12 +774,12 @@ def build_map(
         p2["_grp_color"] = p2["kommungrupp"].map(_group_color)
         folium.GeoJson(
             p2,
-            name="Plats 2-punkter",
-            marker=folium.CircleMarker(radius=4, weight=1, color="#1f2937", fill=True, fill_opacity=0.8),
+            name="Vald plats 2",
+            marker=folium.CircleMarker(radius=5, weight=0, color="transparent", fill=True, fill_opacity=0.8),
             style_function=lambda f: {
                 "fillColor": f["properties"].get("_grp_color", "#9ca3af"),
-                "color": "#1f2937",
-                "weight": 1,
+                "color": "transparent",
+                "weight": 0,
                 "fillOpacity": 0.85,
             },
             popup=folium.GeoJsonPopup(
@@ -795,12 +795,12 @@ def build_map(
         sp["_grp_color"] = sp["kommungrupp"].map(_group_color)
         folium.GeoJson(
             sp,
-            name="Extra känsliga punkter",
-            marker=folium.CircleMarker(radius=4, weight=1, color="#7f1d1d", fill=True, fill_opacity=0.9),
+            name="Valda platser som är extra känsliga för ny infrastruktur",
+            marker=folium.CircleMarker(radius=5, weight=0, color="transparent", fill=True, fill_opacity=0.9),
             style_function=lambda f: {
                 "fillColor": f["properties"].get("_grp_color", "#9ca3af"),
-                "color": "#7f1d1d",
-                "weight": 1,
+                "color": "transparent",
+                "weight": 0,
                 "fillOpacity": 0.9,
             },
             popup=folium.GeoJsonPopup(
@@ -816,12 +816,12 @@ def build_map(
         nsp["_grp_color"] = nsp["kommungrupp"].map(_group_color)
         folium.GeoJson(
             nsp,
-            name="Inte extra känsliga punkter",
-            marker=folium.CircleMarker(radius=4, weight=1, color="#1e3a8a", fill=True, fill_opacity=0.9),
+            name="Valda platser som INTE är känsliga för ny infrastruktur",
+            marker=folium.CircleMarker(radius=5, weight=0, color="transparent", fill=True, fill_opacity=0.9),
             style_function=lambda f: {
                 "fillColor": f["properties"].get("_grp_color", "#9ca3af"),
-                "color": "#1e3a8a",
-                "weight": 1,
+                "color": "transparent",
+                "weight": 0,
                 "fillOpacity": 0.9,
             },
             popup=folium.GeoJsonPopup(
