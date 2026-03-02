@@ -538,7 +538,7 @@ def build_map(
         return {"fillColor": colors.get(val, "#cccccc"), "color": "#444444", "weight": 1.4, "fillOpacity": float(sty_opacity), "opacity": 1}
 
     if show_sty:
-        folium.GeoJson(sty, name="Landskapstyp", style_function=sty_style, popup=folium.GeoJsonPopup(fields=["_sty_popup"], labels=False)).add_to(m)
+        folium.GeoJson(sty, name="Landskapstyper.lst", style_function=sty_style, popup=folium.GeoJsonPopup(fields=["_sty_popup"], labels=False)).add_to(m)
 
     if show_kar:
         kar_colors = _palette_map(kar["_kar_val"])
@@ -555,7 +555,7 @@ def build_map(
 
         folium.GeoJson(
             kar,
-            name="Landskapskaraktär",
+            name="Landskapskaraktärsområden.lst",
             style_function=kar_style,
             popup=folium.GeoJsonPopup(fields=["_kar_popup"], labels=False),
         ).add_to(m)
@@ -590,10 +590,10 @@ def build_map(
 
     if theme_layers:
         label_by_key = {
-            "rorligt_friluftsliv": "lst.LST_RI_Rorligt_friluftsliv_MB4kap2",
-            "utbyggnad_vindkraft": "Lstw.LstW_Regional_analys_utbyggnad_vindkraft_juni2024",
-            "nature_reserve": "qgis_osm.naturereserve",
-            "kulturmiljovard": "raa.RAA_RI_kulturmiljovard_MB3kap6",
+            "rorligt_friluftsliv": "Rörligt friluftsliv.lst",
+            "utbyggnad_vindkraft": "Utbyggnad av vindkraft.lst",
+            "nature_reserve": "Naturreservat.osm",
+            "kulturmiljovard": "Kulturmiljövård.lst",
         }
         style_by_key = {
             "rorligt_friluftsliv": {"fillColor": "#0891b2", "fillOpacity": 0.2, "color": "#0e7490", "weight": 1.0, "opacity": 0.9},
