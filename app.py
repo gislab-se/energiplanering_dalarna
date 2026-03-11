@@ -927,6 +927,37 @@ def _add_lst_zone_overlay(m: folium.Map, zone: gpd.GeoDataFrame | None) -> None:
     ).add_to(m)
 
 
+def _render_boreal_density_legend() -> None:
+    legend_items = [
+        ("1-30", "#1b5e20", "Morkgron"),
+        ("31-60", "#8bc34a", "Ljusgron"),
+        ("61-70", "#fdd835", "Gul"),
+        ("71-80", "#fb8c00", "Orange"),
+        ("81-90", "#e53935", "Rod"),
+        ("91-94", "#7f0000", "Morkrod"),
+    ]
+    rows = []
+    for value_range, color, label in legend_items:
+        rows.append(
+            (
+                "<div style=\"display:flex;align-items:center;gap:8px;margin:0 0 4px 0;\">"
+                f"<span style=\"display:inline-block;width:14px;height:14px;border-radius:3px;"
+                f"background:{color};border:1px solid rgba(0,0,0,0.18);\"></span>"
+                f"<span><strong>{value_range}</strong> {label}</span>"
+                "</div>"
+            )
+        )
+    st.caption("Farglegend: skoglig vardekarna")
+    st.markdown(
+        (
+            "<div style=\"font-size:0.85rem;line-height:1.2;margin:-0.15rem 0 0.35rem 0;\">"
+            + "".join(rows)
+            + "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
 area_mode_options = ["Hela länet", "Samtliga kommuner", "Samtliga kommungrupper"]
 kommun_code_by_name: dict[str, str] = {}
 group_id_by_name: dict[str, str] = {}
@@ -983,6 +1014,8 @@ with st.sidebar:
             (boreal_min_val, boreal_max_val),
             1,
         )
+    if show_boreal_density or filter_points_by_boreal:
+        _render_boreal_density_legend()
     else:
         boreal_value_range = (boreal_min_val, boreal_max_val)
 

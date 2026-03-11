@@ -365,6 +365,52 @@ def _turbo_rgb(norm: np.ndarray) -> np.ndarray:
     return rgb
 
 
+def _green_rgb(norm: np.ndarray) -> np.ndarray:
+    # Low values: light green. High values: dark green.
+    x = np.clip(norm.astype(np.float32), 0.0, 1.0)
+    low = np.array([220.0, 245.0, 225.0], dtype=np.float32)
+    high = np.array([0.0, 68.0, 27.0], dtype=np.float32)
+    rgb = low + (high - low) * x[..., None]
+    return np.clip(np.rint(rgb), 0, 255).astype(np.uint8)
+
+
+def _forest_heat_rgb(values: np.ndarray) -> np.ndarray:
+    # Warm, forest-oriented ramp:
+    # 1-30 dark green, 31-60 light green, 61-70 yellow,
+    # 71-80 orange, 81-90 red, 91+ dark red.
+    v = values.astype(np.float32)
+    anchors = np.array([1.0, 30.0, 31.0, 60.0, 61.0, 70.0, 71.0, 80.0, 81.0, 90.0, 91.0, 100.0], dtype=np.float32)
+    colors = np.array(
+        [
+            [16.0, 64.0, 22.0],
+            [34.0, 94.0, 38.0],
+            [121.0, 185.0, 86.0],
+            [214.0, 242.0, 179.0],
+            [253.0, 216.0, 53.0],
+            [255.0, 235.0, 59.0],
+            [251.0, 140.0, 0.0],
+            [245.0, 124.0, 0.0],
+            [229.0, 57.0, 53.0],
+            [198.0, 40.0, 40.0],
+            [127.0, 0.0, 0.0],
+            [79.0, 0.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    clipped = np.clip(v, anchors[0], anchors[-1])
+    rgb = np.empty(clipped.shape + (3,), dtype=np.float32)
+    for idx in range(len(anchors) - 1):
+        lo = anchors[idx]
+        hi = anchors[idx + 1]
+        mask = (clipped >= lo) & (clipped <= hi if idx == len(anchors) - 2 else clipped < hi)
+        if not np.any(mask):
+            continue
+        span = max(hi - lo, 1.0)
+        t = ((clipped[mask] - lo) / span).astype(np.float32)
+        rgb[mask] = colors[idx] + (colors[idx + 1] - colors[idx]) * t[:, None]
+    return np.clip(np.rint(rgb), 0, 255).astype(np.uint8)
+
+
 def _build_display_image(
     value_u8: np.ndarray,
     alpha_u8: np.ndarray | None,
@@ -372,9 +418,49 @@ def _build_display_image(
     ramp_min: float,
     ramp_max: float,
 ) -> Image.Image:
-    # Opacity mapping requested:
-    # class 1 => 0%, class 2 => 2%, ..., class 94 => 94%
-    class_pct = np.where(value_u8 <= 1, 0.0, np.clip(value_u8.astype(np.float32), 0.0, 100.0) / 100.0)
+    # Opacity mapping requested (custom anchors):
+    # 1=>1, 2=>10, 3=>30, 4=>35, 5=>40, 6=>45, 7=>50, 8=>55, 9=>60, 10=>70.
+    # For classes >10: continue +5 per class, clamped to 100%.
+    v = value_u8.astype(np.float32)
+    class_opacity_pct = np.where(
+        v <= 0,
+        0.0,
+        np.where(
+            v == 1,
+            1.0,
+            np.where(
+                v == 2,
+                10.0,
+                np.where(
+                    v == 3,
+                    30.0,
+                    np.where(
+                        v == 4,
+                        35.0,
+                        np.where(
+                            v == 5,
+                            40.0,
+                            np.where(
+                                v == 6,
+                                45.0,
+                                np.where(
+                                    v == 7,
+                                    50.0,
+                                    np.where(
+                                        v == 8,
+                                        55.0,
+                                        np.where(v == 9, 60.0, np.where(v == 10, 70.0, 70.0 + (v - 10.0) * 5.0)),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    class_opacity_pct = np.clip(class_opacity_pct, 0.0, 100.0)
+    class_pct = class_opacity_pct / 100.0
     class_alpha = np.clip(np.rint(class_pct * 255.0), 0, 255).astype(np.uint8)
     if alpha_u8 is None:
         final_alpha = class_alpha
@@ -390,8 +476,14 @@ def _build_display_image(
     hi = float(ramp_max)
     if hi <= lo:
         hi = lo + 1.0
-    norm = (value_u8.astype(np.float32) - lo) / (hi - lo)
-    rgb = _turbo_rgb(norm)
+    if color_ramp == "green":
+        norm = (value_u8.astype(np.float32) - lo) / (hi - lo)
+        rgb = _green_rgb(norm)
+    elif color_ramp == "forest_heat":
+        rgb = _forest_heat_rgb(value_u8.astype(np.float32))
+    else:
+        norm = (value_u8.astype(np.float32) - lo) / (hi - lo)
+        rgb = _turbo_rgb(norm)
     return Image.fromarray(np.dstack([rgb, final_alpha]), mode="RGBA")
 
 
@@ -481,7 +573,7 @@ def _build_overlay(
         "sample_image": sample_image.name,
         "bounds_4326": bounds_4326,
         "opacity": float(opacity),
-        "opacity_mode": "class_value_percent_with_class1_zero",
+        "opacity_mode": "class1_1_class2_10_class3_30_class4_35_class5_40_class6_45_class7_50_class8_55_class9_60_class10_70_then_plus5",
         "zindex": int(zindex),
         "color_ramp": color_ramp,
         "ramp_min": float(ramp_min),
@@ -542,8 +634,8 @@ def _args() -> argparse.Namespace:
     )
     p.add_argument(
         "--color-ramp",
-        choices=["none", "turbo"],
-        default="turbo",
+        choices=["none", "turbo", "green", "forest_heat"],
+        default="forest_heat",
         help="Color ramp for display image.",
     )
     p.add_argument("--ramp-min", type=float, default=1.0, help="Minimum value mapped in color ramp.")
