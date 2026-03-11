@@ -92,6 +92,22 @@ This writes:
 
 `app.py` will auto-prefer these bundles if present.
 
+Optional: add a compact raster overlay layer (for example boreal density TIFF):
+
+```bash
+.\.venv\Scripts\python.exe scripts/11_prepare_raster_overlay.py --source-tif "C:\path\to\tathetsanalys_3000m_procent.tif" --max-width 1800 --max-height 1800 --clip-admin-layer lan --crop-to-mask-bbox --color-ramp turbo --ramp-min 1 --ramp-max 94 --opacity 1.0
+```
+
+This writes:
+- `data/cloud/tathetsanalys_3000m_procent_light.png`
+- `data/cloud/tathetsanalys_3000m_procent_values.png`
+- `data/cloud/tathetsanalys_3000m_procent.overlay.json`
+
+Then in app sidebar:
+- enable `Tathetsanalys boreal region (raster)`
+- optionally enable `Filtrera alla punktlager med skoglig värdekärna` and use the slider range.
+- Overlay opacity follows class value: `1 -> 0%`, `2 -> 2%`, ..., `94 -> 94%`.
+
 ### 3) Layer Review App (8 lager)
 Explore aggregated and raw points across:
 `kommun`, `kommungrupp`, `landskapstyp`, `landskapskaraktar`, `kulturmiljo`, `friluftsliv`, `vindkraft`, `naturvarden`.
@@ -101,6 +117,39 @@ Explore aggregated and raw points across:
 ```
 
 If you see `ModuleNotFoundError` (for example `streamlit_folium` or `geopandas`), run the dependency install command above in the same environment.
+
+## Hemvist (QI) Logic
+Definition in app:
+- `Hemvist (QI)` filters by respondent home (`Q1`), not by point location.
+- `Koordinatlage (spatialt)` filters by where points are located.
+
+Expected behavior:
+- If `Arbetsomrade = kommun/kommungrupp` and `Filtergrund = Hemvist (QI)`, points can appear anywhere in the county.
+- The selected area controls who is included (home), not where their points are.
+
+### Future Home Layer (recommended)
+To make Hemvist robust and independent from raw Novus group coding, build a dedicated respondent-home layer/table with one row per `respid`:
+- `respid`
+- `home_kommunkod` (from `Q1`)
+- `home_kommungrupp_id_current` (derived from current kommun mapping)
+- `home_kommungrupp_namn_current`
+- optional: `record` (for audit/debug)
+
+Join this once to point layers (`plats_1`, `plats_2`, sensitive/non-sensitive).  
+Then app filtering can use only these fields for Hemvist.
+
+Suggested build order:
+1. Build/update admin mapping (`kommuner` + `kommungrupper`) in `data/cloud/admin_boundaries.gpkg`.
+2. Build/update respondent home table from Novus (`Q1` -> `home_kommunkod` -> current group id/name).
+3. Attach home fields to each exported point row in `novus_locked_points.gpkg`.
+4. Deploy/reboot Streamlit app.
+
+### Rebuild Impact
+If you introduce the dedicated home layer:
+- Rebuild needed: point export bundle (`novus_locked_points.gpkg`) or equivalent DB view that feeds the app.
+- Sometimes needed: `admin_boundaries.gpkg` only if kommun/kommungrupp definitions changed.
+- Not needed: LST polygon bundles (`lst_layers.gpkg`), boundary bundles (`background_layers.gpkg`) unless their own source data changed.
+- App code changes are small: switch Hemvist fields to the new `*_current` columns.
 
 ## Data policy
 To support Streamlit Cloud, this repo commits a small app-ready bundle:
@@ -118,6 +167,32 @@ git add data/interim/hem_kommun_network
 git commit -m "Update hem_kommun_network artifacts"
 git push
 ```
+
+## Arbetsplan För Appförändringar (Mars 2026)
+Överenskommet arbetssätt:
+1. Vi diskuterar en förändring i taget innan implementation.
+2. Vi implementerar endast en avgränsad förändring per steg.
+3. När steget fungerar verifierat, gör vi en separat commit.
+4. Sedan går vi vidare till nästa förändring, så det är enkelt att backa ett steg.
+
+Förändringar att ta en och en:
+1. Byta lagernamn till mer läsbara namn (fortfarande nära originalkällor):
+- `Landskapstyper.lst`
+- `Landskapskaraktärsområden.lst`
+- `Rörligt friluftsliv.lst`
+- `Utbyggnad av vindkraft.lst`
+- `Kulturmiljövård.lst`
+- OSM-lager: byt `nature_reserve` till `Naturreservat.osm`
+2. Använda svenska tecken i UI (exempel):
+- `Tanda` -> `Tända`
+- `Analyslage` -> `Analysläge`
+- `Energiomstallning i Dalarna` -> `Energiomställning i Dalarna`
+- `kansliga punkter` -> `känsliga punkter`
+3. Analysutveckling (måste problematiseras innan implementation):
+- Utöka rulllistan `Arbetsomrade` med `landskapstyp` och `landskapskaraktar`.
+- Gör dessa lager valbara för analys så användaren kan välja t.ex. `lan + landskapstyp + punkt 1`.
+- Visa antal punkter inom vald landskapstyp/karaktär, uppdelat enligt överenskommen indelning.
+- Denna punkt ska designas och riskbedömas innan kodändring.
 
 
 

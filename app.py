@@ -3,15 +3,18 @@ from __future__ import annotations
 from pathlib import Path
 import inspect
 import importlib.util
+import json
 import re
 import sys
 import unicodedata
 
 import folium
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+from PIL import Image
 from streamlit_folium import folium_static
 from shapely.geometry import Point
 
@@ -46,6 +49,7 @@ cloud_dir = repo_root / "data" / "cloud"
 LST_BUNDLE_GPKG = "lst_layers.gpkg"
 ADMIN_BUNDLE_GPKG = "admin_boundaries.gpkg"
 LOCKED_POINTS_GPKG = "novus_locked_points.gpkg"
+BOREAL_RASTER_OVERLAY_JSON = "tathetsanalys_3000m_procent.overlay.json"
 
 LST_BUNDLE_LAYER_BY_KEY = {
     "landskapstyp": "landskapstyp",
@@ -399,6 +403,146 @@ def _cached_locked_point_layers(repo_root_str: str, cache_token: str):
 @st.cache_data(show_spinner=False, ttl=600)
 def _cached_wind_layers(repo_root_str: str, buffer_m: int):
     return load_wind_turbines_dalarna_buffer(Path(repo_root_str), buffer_m=buffer_m)
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def _cached_raster_overlay(repo_root_str: str, overlay_json: str):
+    cfg_path = Path(repo_root_str) / "data" / "cloud" / overlay_json
+    if not cfg_path.exists():
+        return None
+
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    image_name = str(cfg.get("image", "")).strip()
+    if not image_name:
+        raise RuntimeError(f"{overlay_json}: missing 'image'")
+
+    image_path = (cfg_path.parent / image_name).resolve()
+    if not image_path.exists():
+        raise FileNotFoundError(f"Missing raster image: {image_path}")
+
+    bounds_raw = cfg.get("bounds_4326")
+    if not isinstance(bounds_raw, list) or len(bounds_raw) != 2:
+        raise RuntimeError(f"{overlay_json}: 'bounds_4326' must be [[south, west], [north, east]]")
+
+    try:
+        bounds = [
+            [float(bounds_raw[0][0]), float(bounds_raw[0][1])],
+            [float(bounds_raw[1][0]), float(bounds_raw[1][1])],
+        ]
+    except Exception as exc:
+        raise RuntimeError(f"{overlay_json}: invalid coordinate values in 'bounds_4326'") from exc
+
+    return {
+        "name": str(cfg.get("name", "Tathetsanalys boreal region")),
+        "image": str(image_path),
+        "bounds": bounds,
+        "opacity": float(cfg.get("opacity", 1.0)),
+        "zindex": int(cfg.get("zindex", 5)),
+        "raster_min": int(cfg.get("raster_min", 1)),
+        "raster_max": int(cfg.get("raster_max", 94)),
+        "sample_image": str((cfg_path.parent / str(cfg.get("sample_image", image_name))).resolve()),
+    }
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def _cached_raster_sampler(repo_root_str: str, overlay_json: str):
+    cfg_path = Path(repo_root_str) / "data" / "cloud" / overlay_json
+    if not cfg_path.exists():
+        return None
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    bounds_raw = cfg.get("bounds_4326")
+    if not isinstance(bounds_raw, list) or len(bounds_raw) != 2:
+        return None
+
+    sample_name = str(cfg.get("sample_image", cfg.get("image", ""))).strip()
+    if not sample_name:
+        return None
+    sample_path = (cfg_path.parent / sample_name).resolve()
+    if not sample_path.exists():
+        return None
+
+    with Image.open(sample_path) as img:
+        arr = np.asarray(img)
+    if arr.ndim == 2:
+        values = arr.astype(np.float32)
+        alpha = None
+    elif arr.ndim == 3 and arr.shape[2] == 2:
+        values = arr[:, :, 0].astype(np.float32)
+        alpha = arr[:, :, 1].astype(np.uint8)
+    elif arr.ndim == 3 and arr.shape[2] >= 3:
+        values = arr[:, :, 0].astype(np.float32)
+        alpha = arr[:, :, 3].astype(np.uint8) if arr.shape[2] >= 4 else None
+    else:
+        return None
+
+    bounds = [
+        [float(bounds_raw[0][0]), float(bounds_raw[0][1])],
+        [float(bounds_raw[1][0]), float(bounds_raw[1][1])],
+    ]
+    rmin = int(cfg.get("raster_min", 1))
+    rmax = int(cfg.get("raster_max", 94))
+    return {
+        "values": values,
+        "alpha": alpha,
+        "bounds": bounds,
+        "raster_min": rmin,
+        "raster_max": rmax,
+        "sample_path": str(sample_path),
+    }
+
+
+def _attach_raster_values(gdf: gpd.GeoDataFrame | None, sampler: dict | None, out_col: str = "skoglig_vardekarna") -> gpd.GeoDataFrame | None:
+    if gdf is None or len(gdf) == 0 or sampler is None:
+        return gdf
+    if gdf.crs is None:
+        pts = gdf.set_crs(4326)
+    else:
+        pts = gdf.to_crs(4326) if int(gdf.crs.to_epsg() or 0) != 4326 else gdf
+
+    vals = sampler["values"]
+    alpha = sampler["alpha"]
+    h, w = vals.shape
+    south, west = sampler["bounds"][0]
+    north, east = sampler["bounds"][1]
+    dx = max(1e-12, (east - west))
+    dy = max(1e-12, (north - south))
+
+    xy = np.array([(geom.x, geom.y) if geom is not None else (np.nan, np.nan) for geom in pts.geometry], dtype=np.float64)
+    lon = xy[:, 0]
+    lat = xy[:, 1]
+    inside = np.isfinite(lon) & np.isfinite(lat) & (lon >= west) & (lon <= east) & (lat >= south) & (lat <= north)
+
+    out_vals = np.full(len(pts), np.nan, dtype=np.float64)
+    if inside.any():
+        cols = np.rint(((lon[inside] - west) / dx) * (w - 1)).astype(np.int64)
+        rows = np.rint(((north - lat[inside]) / dy) * (h - 1)).astype(np.int64)
+        cols = np.clip(cols, 0, w - 1)
+        rows = np.clip(rows, 0, h - 1)
+        sampled = vals[rows, cols].astype(np.float64)
+        if alpha is not None:
+            a = alpha[rows, cols]
+            sampled[a == 0] = np.nan
+        out_vals[inside] = sampled
+
+    out = pts.copy()
+    out[out_col] = out_vals
+    return out
+
+
+def _filter_points_by_raster_range(
+    gdf: gpd.GeoDataFrame | None,
+    sampler: dict | None,
+    vmin: int,
+    vmax: int,
+    value_col: str = "skoglig_vardekarna",
+) -> gpd.GeoDataFrame | None:
+    if gdf is None or len(gdf) == 0:
+        return gdf
+    with_vals = _attach_raster_values(gdf, sampler, out_col=value_col)
+    if with_vals is None or len(with_vals) == 0:
+        return with_vals
+    keep = with_vals[value_col].between(float(vmin), float(vmax), inclusive="both")
+    return with_vals[keep.fillna(False)].copy()
 
 
 def _empty_gdf() -> gpd.GeoDataFrame:
@@ -820,6 +964,27 @@ with st.sidebar:
     show_utbyggnad_vindkraft = st.checkbox("Utbyggnad av vindkraft.lst", value=False)
     show_nature_reserve = st.checkbox("Naturreservat.osm", value=False)
     show_kulturmiljovard = st.checkbox("Kulturmiljövård.lst", value=False)
+    show_boreal_density = st.checkbox("Tathetsanalys boreal region (raster)", value=False)
+    filter_points_by_boreal = st.checkbox("Filtrera alla punktlager med skoglig värdekärna", value=False)
+    boreal_min_val, boreal_max_val = 1, 94
+    if show_boreal_density or filter_points_by_boreal:
+        try:
+            boreal_meta = _cached_raster_overlay(str(repo_root), BOREAL_RASTER_OVERLAY_JSON)
+            if boreal_meta is not None:
+                boreal_min_val = int(boreal_meta.get("raster_min", 1))
+                boreal_max_val = int(boreal_meta.get("raster_max", 94))
+        except Exception:
+            pass
+    if filter_points_by_boreal:
+        boreal_value_range = st.slider(
+            f"Täthetsvärde ({boreal_min_val}-{boreal_max_val})",
+            boreal_min_val,
+            boreal_max_val,
+            (boreal_min_val, boreal_max_val),
+            1,
+        )
+    else:
+        boreal_value_range = (boreal_min_val, boreal_max_val)
 
     st.subheader("Betydelsefulla platser")
     st.caption("Färg visar kommungrupp.")
@@ -933,6 +1098,8 @@ if show_lan_boundary or analysis_enabled or area_kind == "lan":
     if lan_boundary is None or len(lan_boundary) == 0:
         raise RuntimeError("admin_boundaries.gpkg: lan layer is empty or invalid.")
 
+point_filter_stats_rows: list[dict[str, object]] | None = None
+point_filter_totals: dict[str, int | float] | None = None
 plats1_points = plats2_points = sensitive_points = non_sensitive_points = None
 if show_plats1_points or show_plats2_points or show_sensitive_points or show_non_sensitive_points or analysis_enabled:
     locked_cache_token = _locked_points_cache_token(str(repo_root))
@@ -965,6 +1132,85 @@ if show_plats1_points or show_plats2_points or show_sensitive_points or show_non
     plats2_points = _apply_area_filter(plats2_points, filter_mode, area_kind, area_value, kommun_code_by_name, group_id_by_name, kommuner, kommungrupper)
     sensitive_points = _apply_area_filter(sensitive_points, filter_mode, area_kind, area_value, kommun_code_by_name, group_id_by_name, kommuner, kommungrupper)
     non_sensitive_points = _apply_area_filter(non_sensitive_points, filter_mode, area_kind, area_value, kommun_code_by_name, group_id_by_name, kommuner, kommungrupper)
+    before_counts = {
+        "Vald plats 1": len(plats1_points) if plats1_points is not None else 0,
+        "Vald plats 2": len(plats2_points) if plats2_points is not None else 0,
+        "Extra känsliga": len(sensitive_points) if sensitive_points is not None else 0,
+        "Inte extra känsliga": len(non_sensitive_points) if non_sensitive_points is not None else 0,
+    }
+
+    if filter_points_by_boreal:
+        sampler = _cached_raster_sampler(str(repo_root), BOREAL_RASTER_OVERLAY_JSON)
+        if sampler is None:
+            st.sidebar.warning("Skoglig raster för filtrering saknas. Bygg overlay först.")
+        else:
+            vmin, vmax = int(boreal_value_range[0]), int(boreal_value_range[1])
+            plats1_points = _filter_points_by_raster_range(plats1_points, sampler, vmin, vmax)
+            plats2_points = _filter_points_by_raster_range(plats2_points, sampler, vmin, vmax)
+            sensitive_points = _filter_points_by_raster_range(sensitive_points, sampler, vmin, vmax)
+            non_sensitive_points = _filter_points_by_raster_range(non_sensitive_points, sampler, vmin, vmax)
+            with right_col:
+                st.caption(f"Rasterfilter aktivt: skoglig värdekärna {vmin}-{vmax}.")
+
+    after_counts = {
+        "Vald plats 1": len(plats1_points) if plats1_points is not None else 0,
+        "Vald plats 2": len(plats2_points) if plats2_points is not None else 0,
+        "Extra känsliga": len(sensitive_points) if sensitive_points is not None else 0,
+        "Inte extra känsliga": len(non_sensitive_points) if non_sensitive_points is not None else 0,
+    }
+    vis_by_layer = {
+        "Vald plats 1": bool(show_plats1_points),
+        "Vald plats 2": bool(show_plats2_points),
+        "Extra känsliga": bool(show_sensitive_points),
+        "Inte extra känsliga": bool(show_non_sensitive_points),
+    }
+    point_filter_stats_rows = []
+    for label in ["Vald plats 1", "Vald plats 2", "Extra känsliga", "Inte extra känsliga"]:
+        b = int(before_counts.get(label, 0))
+        a = int(after_counts.get(label, 0))
+        keep_pct = 100.0 if b == 0 else (100.0 * a / b)
+        point_filter_stats_rows.append(
+            {
+                "Punktlager": label,
+                "Visas i karta": "Ja" if vis_by_layer.get(label, False) else "Nej",
+                "Före rasterfilter": b,
+                "Efter rasterfilter": a,
+                "Behållna %": round(keep_pct, 1),
+            }
+        )
+
+    total_before_visible = int(sum(before_counts.get(lbl, 0) for lbl, on in vis_by_layer.items() if on))
+    total_after_visible = int(sum(after_counts.get(lbl, 0) for lbl, on in vis_by_layer.items() if on))
+    total_keep_visible = 100.0 if total_before_visible == 0 else (100.0 * total_after_visible / total_before_visible)
+    total_before_all = int(sum(before_counts.values()))
+    total_after_all = int(sum(after_counts.values()))
+    total_keep_all = 100.0 if total_before_all == 0 else (100.0 * total_after_all / total_before_all)
+    point_filter_totals = {
+        "before_visible": total_before_visible,
+        "after_visible": total_after_visible,
+        "keep_visible_pct": round(total_keep_visible, 1),
+        "before_all": total_before_all,
+        "after_all": total_after_all,
+        "keep_all_pct": round(total_keep_all, 1),
+    }
+    point_filter_stats_rows.append(
+        {
+            "Punktlager": "SUMMA (visas i karta)",
+            "Visas i karta": "Ja",
+            "Före rasterfilter": total_before_visible,
+            "Efter rasterfilter": total_after_visible,
+            "Behållna %": round(total_keep_visible, 1),
+        }
+    )
+    point_filter_stats_rows.append(
+        {
+            "Punktlager": "SUMMA (alla punktlager)",
+            "Visas i karta": "-",
+            "Före rasterfilter": total_before_all,
+            "Efter rasterfilter": total_after_all,
+            "Behållna %": round(total_keep_all, 1),
+        }
+    )
 
     if filter_mode == "Hemvist (QI)" and area_kind in {"kommun", "kommungrupp"}:
         active_counts = []
@@ -981,6 +1227,32 @@ if show_plats1_points or show_plats2_points or show_sensitive_points or show_non
                 "Hemvist-filter gav 0 träffar för valt arbetsområde. "
                 "Om du nyss byggt om `novus_locked_points.gpkg`, starta om appen eller vänta 5 minuter så cache uppdateras."
             )
+
+if filter_points_by_boreal:
+    st.sidebar.subheader("Rasterfilter: före/efter")
+    vmin, vmax = int(boreal_value_range[0]), int(boreal_value_range[1])
+    st.sidebar.caption(
+        f"Arbetsområde: {_analysis_scope_label(area_kind, area_value)} | Värdeintervall: {vmin}-{vmax}"
+    )
+    st.sidebar.caption("Före/efter avser rasterfiltret, efter arbetsområdesfilter.")
+    if point_filter_totals is not None:
+        c1, c2 = st.sidebar.columns(2)
+        c1.metric("Före (visas)", int(point_filter_totals["before_visible"]))
+        c2.metric("Efter (visas)", int(point_filter_totals["after_visible"]))
+        st.sidebar.caption(f"Andel kvar (visas): {float(point_filter_totals['keep_visible_pct']):.1f}%")
+        c3, c4 = st.sidebar.columns(2)
+        c3.metric("Före (alla)", int(point_filter_totals["before_all"]))
+        c4.metric("Efter (alla)", int(point_filter_totals["after_all"]))
+        st.sidebar.caption(f"Andel kvar (alla): {float(point_filter_totals['keep_all_pct']):.1f}%")
+    if point_filter_stats_rows:
+        st.sidebar.dataframe(
+            pd.DataFrame(point_filter_stats_rows),
+            use_container_width=True,
+            hide_index=True,
+            height=220,
+        )
+    else:
+        st.sidebar.info("Inga punktlager är inlästa för valt arbetsområde.")
 
 wind_turbines = None
 if show_wind_turbines:
@@ -1000,6 +1272,19 @@ if sty is None or len(sty) == 0:
         sty = gpd.GeoDataFrame(geometry=kommungrupper.geometry.copy(), crs=kommungrupper.crs)
     else:
         sty = _fallback_center_layer()
+
+extra_image_overlays: list[dict[str, object]] = []
+if show_boreal_density:
+    try:
+        boreal_overlay = _cached_raster_overlay(str(repo_root), BOREAL_RASTER_OVERLAY_JSON)
+        if boreal_overlay is None:
+            st.sidebar.info(
+                "Raster overlay saknas. Kor scripts/11_prepare_raster_overlay.py for att skapa en komprimerad overlay."
+            )
+        else:
+            extra_image_overlays.append(boreal_overlay)
+    except Exception as exc:
+        st.sidebar.warning(f"Kunde inte lasa rasteroverlay: {exc}")
 
 m = _build_map_compat(
     sty=sty,
@@ -1031,6 +1316,7 @@ m = _build_map_compat(
     wind_turbines=wind_turbines,
     show_wind_turbines=show_wind_turbines,
     satellite_base=satellite_base,
+    extra_image_overlays=extra_image_overlays,
 )
 
 if analysis_enabled:

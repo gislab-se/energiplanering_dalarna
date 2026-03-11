@@ -78,24 +78,44 @@ def load_layers(repo_root: Path) -> Tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
 
 
 def _load_dalarna_boundary(repo_root: Path) -> gpd.GeoDataFrame:
-    try:
-        return load_dalarna_boundary_from_db().to_crs(4326)
-    except Exception:
-        fallback = (
-            repo_root
-            / "data"
-            / "raw"
-            / "unpacked"
-            / "Geodata-20260223T113354Z-1-001"
-            / "Geodata"
-            / "Dalarna lansgrans"
-            / "Dalarna lansgrans"
-            / "Dalarna lansgrans.shp"
-        )
-        lan = gpd.read_file(fallback)
+    cloud = repo_root / "data" / "cloud"
+    admin_bundle = cloud / "admin_boundaries.gpkg"
+    if admin_bundle.exists():
+        for layer in ["lan", "lan_boundary", "county", "lansgrans"]:
+            try:
+                return gpd.read_file(admin_bundle, layer=layer).to_crs(4326)
+            except Exception:
+                continue
+
+    background_bundle = cloud / "background_layers.gpkg"
+    if background_bundle.exists():
+        try:
+            return gpd.read_file(background_bundle, layer="lan_boundary").to_crs(4326)
+        except Exception:
+            pass
+
+    cloud_shp = cloud / "Dalarna lansgrans.shp"
+    if cloud_shp.exists():
+        lan = gpd.read_file(cloud_shp)
         if lan.crs is None:
             lan = lan.set_crs(3006)
         return lan.to_crs(4326)
+
+    fallback = (
+        repo_root
+        / "data"
+        / "raw"
+        / "unpacked"
+        / "Geodata-20260223T113354Z-1-001"
+        / "Geodata"
+        / "Dalarna lansgrans"
+        / "Dalarna lansgrans"
+        / "Dalarna lansgrans.shp"
+    )
+    lan = gpd.read_file(fallback)
+    if lan.crs is None:
+        lan = lan.set_crs(3006)
+    return lan.to_crs(4326)
 
 
 def _clip_and_simplify_to_dalarna(gdf: gpd.GeoDataFrame, dalarna_4326: gpd.GeoDataFrame, layer_key: str | None = None) -> gpd.GeoDataFrame:
@@ -370,25 +390,7 @@ def load_wind_turbines_dalarna_buffer(repo_root: Path, buffer_m: int = 30000) ->
         wind = wind.set_crs(3006)
     wind_3006 = wind.to_crs(3006)
 
-    try:
-        dalarna = load_dalarna_boundary_from_db()
-    except Exception:
-        fallback = (
-            repo_root
-            / "data"
-            / "raw"
-            / "unpacked"
-            / "Geodata-20260223T113354Z-1-001"
-            / "Geodata"
-            / "Dalarna lansgrans"
-            / "Dalarna lansgrans"
-            / "Dalarna lansgrans.shp"
-        )
-        dalarna = gpd.read_file(fallback)
-        if dalarna.crs is None:
-            dalarna = dalarna.set_crs(3006)
-
-    dalarna_3006 = dalarna.to_crs(3006)
+    dalarna_3006 = _load_dalarna_boundary(repo_root).to_crs(3006)
     geom = dalarna_3006.geometry.unary_union
     buf_geom = geom.buffer(float(buffer_m))
     buffer_gdf = gpd.GeoDataFrame({"name": [f"dalarna_plus_{buffer_m}m"]}, geometry=[buf_geom], crs=3006)
@@ -524,6 +526,7 @@ def build_map(
     wind_turbines: gpd.GeoDataFrame | None = None,
     show_wind_turbines: bool = False,
     satellite_base: bool = False,
+    extra_image_overlays: list[dict[str, object]] | None = None,
 ) -> folium.Map:
     sty_vals = sty[sty_field].fillna("(saknas)").astype(str).map(_normalize_landscape_type)
     kar_vals = kar[kar_field].fillna("(saknas)").astype(str)
@@ -940,6 +943,27 @@ def build_map(
                 labels=True,
             ),
         ).add_to(m)
+
+    if extra_image_overlays:
+        for overlay in extra_image_overlays:
+            if not isinstance(overlay, dict):
+                continue
+            image = overlay.get("image")
+            bounds = overlay.get("bounds")
+            if image is None or bounds is None:
+                continue
+            try:
+                folium.raster_layers.ImageOverlay(
+                    image=image,
+                    bounds=bounds,
+                    name=str(overlay.get("name", "Rasteroverlay")),
+                    opacity=float(overlay.get("opacity", 0.55)),
+                    interactive=False,
+                    cross_origin=False,
+                    zindex=int(overlay.get("zindex", 5)),
+                ).add_to(m)
+            except Exception:
+                continue
 
     folium.LayerControl(collapsed=False).add_to(m)
 
