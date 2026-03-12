@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import os
 import unicodedata
 from pathlib import Path
@@ -527,6 +528,9 @@ def build_map(
     show_wind_turbines: bool = False,
     satellite_base: bool = False,
     extra_image_overlays: list[dict[str, object]] | None = None,
+    show_map_legend: bool = True,
+    initial_center: list[float] | tuple[float, float] | None = None,
+    initial_zoom: int | None = None,
 ) -> folium.Map:
     sty_vals = sty[sty_field].fillna("(saknas)").astype(str).map(_normalize_landscape_type)
     kar_vals = kar[kar_field].fillna("(saknas)").astype(str)
@@ -535,7 +539,14 @@ def build_map(
 
     colors = _palette_map(sty["_sty_val"])
     centroid = sty.unary_union.centroid
-    m = folium.Map(location=[centroid.y, centroid.x], zoom_start=8, tiles=None)
+    map_location = [centroid.y, centroid.x]
+    if initial_center is not None and len(initial_center) == 2:
+        try:
+            map_location = [float(initial_center[0]), float(initial_center[1])]
+        except Exception:
+            map_location = [centroid.y, centroid.x]
+    zoom_start = int(initial_zoom) if initial_zoom is not None else 8
+    m = folium.Map(location=map_location, zoom_start=zoom_start, tiles=None)
     folium.TileLayer(
         tiles="CartoDB positron",
         name="Bakgrund: Ljus karta",
@@ -558,7 +569,7 @@ def build_map(
         return {"fillColor": colors.get(val, "#cccccc"), "color": "#444444", "weight": 1.4, "fillOpacity": float(sty_opacity), "opacity": 1}
 
     if show_sty:
-        folium.GeoJson(sty, name="Landskapstyper.lst", style_function=sty_style, popup=folium.GeoJsonPopup(fields=["_sty_popup"], labels=False)).add_to(m)
+        folium.GeoJson(sty, name="Landskapstyper", style_function=sty_style, popup=folium.GeoJsonPopup(fields=["_sty_popup"], labels=False)).add_to(m)
 
     if show_kar:
         kar_colors = _palette_map(kar["_kar_val"])
@@ -575,7 +586,7 @@ def build_map(
 
         folium.GeoJson(
             kar,
-            name="Landskapskaraktärsområden.lst",
+            name="Landskapskaraktärsområden",
             style_function=kar_style,
             popup=folium.GeoJsonPopup(fields=["_kar_popup"], labels=False),
         ).add_to(m)
@@ -610,15 +621,15 @@ def build_map(
 
     if theme_layers:
         label_by_key = {
-            "rorligt_friluftsliv": "Rörligt friluftsliv.lst",
-            "utbyggnad_vindkraft": "Utbyggnad av vindkraft.lst",
-            "nature_reserve": "Naturreservat.osm",
-            "kulturmiljovard": "Kulturmiljövård.lst",
+            "rorligt_friluftsliv": "Rörligt friluftsliv",
+            "utbyggnad_vindkraft": "Utbyggnad av vindkraft",
+            "nature_reserve": "Naturreservat",
+            "kulturmiljovard": "Kulturmiljövård",
         }
         style_by_key = {
             "rorligt_friluftsliv": {"fillColor": "#0891b2", "fillOpacity": 0.2, "color": "#0e7490", "weight": 1.0, "opacity": 0.9},
             "utbyggnad_vindkraft": {"fillColor": "#22c55e", "fillOpacity": 0.2, "color": "#15803d", "weight": 1.0, "opacity": 0.9},
-            "nature_reserve": {"fillColor": "#16a34a", "fillOpacity": 0.16, "color": "#166534", "weight": 0.6, "opacity": 0.7},
+            "nature_reserve": {"fillColor": "#a21caf", "fillOpacity": 0.0, "color": "#a21caf", "weight": 2.2, "opacity": 0.95, "dashArray": "8,6"},
             "kulturmiljovard": {"fillColor": "#f59e0b", "fillOpacity": 0.2, "color": "#b45309", "weight": 1.0, "opacity": 0.9},
         }
         popup_fields_by_key = {
@@ -654,7 +665,7 @@ def build_map(
                 key,
                 {"fillColor": "#64748b", "fillOpacity": 0.16, "color": "#334155", "weight": 1.0, "opacity": 0.9},
             )
-            smooth_factor = 2.0 if key == "nature_reserve" else None
+            smooth_factor = 2.0 if key in {"nature_reserve", "rorligt_friluftsliv", "kulturmiljovard"} else None
             folium.GeoJson(
                 gdf,
                 name=label_by_key.get(key, key),
@@ -754,9 +765,9 @@ def build_map(
             return {
                 "fillColor": feature["properties"].get("_grp_color", "#9ca3af"),
                 "fillOpacity": 0,
-                "color": "#374151",
-                "weight": 1.2,
-                "opacity": 0.9,
+                "color": "#1d4ed8",
+                "weight": 1.6,
+                "opacity": 0.95,
             }
 
         folium.GeoJson(
@@ -765,6 +776,53 @@ def build_map(
             style_function=grp_style,
             popup=folium.GeoJsonPopup(fields=["kommungrupp_namn", "kommuner"], aliases=["Grupp", "Kommuner"], labels=True),
         ).add_to(m)
+
+    def _first_popup_field(gdf: gpd.GeoDataFrame, candidates: list[str]) -> str | None:
+        for candidate in candidates:
+            if candidate in gdf.columns:
+                return candidate
+        return None
+
+    def _point_popup(gdf: gpd.GeoDataFrame) -> folium.GeoJsonPopup:
+        kommungrupp_field = _first_popup_field(gdf, ["home_kommungrupp_current", "home_kommungrupp", "kommungrupp"])
+        kommun_field = _first_popup_field(gdf, ["home_kommunnamn", "admin_2"])
+
+        def _format_value(value: object) -> str:
+            if value is None or pd.isna(value):
+                return ""
+            text = str(value).strip()
+            if text.endswith(".0") and text[:-2].replace("-", "", 1).isdigit():
+                text = text[:-2]
+            return "" if text == "" else html.escape(text)
+
+        def _popup_html(row: pd.Series) -> str:
+            detail_rows = [
+                ("Hemvist", _format_value(row.get("respondent_hemvist"))),
+                ("Ålder", _format_value(row.get("respondent_alder"))),
+                ("Plats nr", _format_value(row.get("plats_nr"))),
+                ("Kommungrupp", _format_value(row.get(kommungrupp_field)) if kommungrupp_field else ""),
+                ("Kommun", _format_value(row.get(kommun_field)) if kommun_field else ""),
+                ("Fritext", _format_value(row.get("plats_fritext"))),
+            ]
+            detail_html = "".join(
+                (
+                    "<div style=\"margin-top:6px;\">"
+                    f"<div style=\"font-size:12px;font-weight:700;color:#334155;\">{label}</div>"
+                    f"<div style=\"font-size:14px;color:#111827;\">{value}</div>"
+                    "</div>"
+                )
+                for label, value in detail_rows
+                if value
+            )
+            return (
+                "<div style=\"min-width:220px;line-height:1.35;\">"
+                "<div style=\"font-size:17px;font-weight:700;color:#111827;margin-bottom:4px;\">Respondent</div>"
+                f"{detail_html}"
+                "</div>"
+            )
+
+        gdf["_popup_html"] = gdf.apply(_popup_html, axis=1)
+        return folium.GeoJsonPopup(fields=["_popup_html"], labels=False, localize=False, style="margin: 0;")
 
     buffer_sources: list[gpd.GeoDataFrame] = []
 
@@ -781,11 +839,7 @@ def build_map(
                 "weight": 0,
                 "fillOpacity": 0.85,
             },
-            popup=folium.GeoJsonPopup(
-                fields=["kommungrupp", "admin_2", "kommunkod", "plats_fritext"],
-                aliases=["Kommungrupp", "Kommun", "Kommunkod", "Fritext"],
-                labels=True,
-            ),
+            popup=_point_popup(p1),
         ).add_to(m)
         buffer_sources.append(p1)
 
@@ -802,11 +856,7 @@ def build_map(
                 "weight": 0,
                 "fillOpacity": 0.85,
             },
-            popup=folium.GeoJsonPopup(
-                fields=["kommungrupp", "admin_2", "kommunkod", "plats_fritext"],
-                aliases=["Kommungrupp", "Kommun", "Kommunkod", "Fritext"],
-                labels=True,
-            ),
+            popup=_point_popup(p2),
         ).add_to(m)
         buffer_sources.append(p2)
 
@@ -823,11 +873,7 @@ def build_map(
                 "weight": 0,
                 "fillOpacity": 0.9,
             },
-            popup=folium.GeoJsonPopup(
-                fields=["plats_nr", "kommungrupp", "admin_2", "kommunkod", "plats_fritext"],
-                aliases=["Plats nr", "Kommungrupp", "Kommun", "Kommunkod", "Fritext"],
-                labels=True,
-            ),
+            popup=_point_popup(sp),
         ).add_to(m)
         buffer_sources.append(sp)
 
@@ -844,11 +890,7 @@ def build_map(
                 "weight": 0,
                 "fillOpacity": 0.9,
             },
-            popup=folium.GeoJsonPopup(
-                fields=["plats_nr", "kommungrupp", "admin_2", "kommunkod", "plats_fritext"],
-                aliases=["Plats nr", "Kommungrupp", "Kommun", "Kommunkod", "Fritext"],
-                labels=True,
-            ),
+            popup=_point_popup(nsp),
         ).add_to(m)
         buffer_sources.append(nsp)
 
@@ -967,17 +1009,18 @@ def build_map(
 
     folium.LayerControl(collapsed=False).add_to(m)
 
-    legend_items = "".join(
-        f"<div><span style='display:inline-block;width:12px;height:12px;background:{c};margin-right:6px;border:1px solid #666;'></span>{l}</div>"
-        for l, c in colors.items()
-    )
-    legend_html = (
-        "<div style='position: fixed; bottom: 20px; right: 20px; z-index: 9999;"
-        " background: white; padding: 10px 12px; border: 1px solid #999; border-radius: 4px;"
-        " font-size: 12px; max-height: 260px; overflow-y: auto;'>"
-        "<b>Landskapstyper</b>"
-        f"{legend_items}"
-        "</div>"
-    )
-    m.get_root().html.add_child(folium.Element(legend_html))
+    if show_map_legend:
+        legend_items = "".join(
+            f"<div><span style='display:inline-block;width:12px;height:12px;background:{c};margin-right:6px;border:1px solid #666;'></span>{l}</div>"
+            for l, c in colors.items()
+        )
+        legend_html = (
+            "<div style='position: fixed; bottom: 20px; right: 20px; z-index: 9999;"
+            " background: white; padding: 10px 12px; border: 1px solid #999; border-radius: 4px;"
+            " font-size: 12px; max-height: 260px; overflow-y: auto;'>"
+            "<b>Landskapstyper</b>"
+            f"{legend_items}"
+            "</div>"
+        )
+        m.get_root().html.add_child(folium.Element(legend_html))
     return m

@@ -376,16 +376,16 @@ def _green_rgb(norm: np.ndarray) -> np.ndarray:
 
 def _forest_heat_rgb(values: np.ndarray) -> np.ndarray:
     # Warm, forest-oriented ramp:
-    # 1-30 dark green, 31-60 light green, 61-70 yellow,
+    # 1-30 muted green, 31-60 light green, 61-70 yellow,
     # 71-80 orange, 81-90 red, 91+ dark red.
     v = values.astype(np.float32)
     anchors = np.array([1.0, 30.0, 31.0, 60.0, 61.0, 70.0, 71.0, 80.0, 81.0, 90.0, 91.0, 100.0], dtype=np.float32)
     colors = np.array(
         [
-            [16.0, 64.0, 22.0],
-            [34.0, 94.0, 38.0],
-            [121.0, 185.0, 86.0],
-            [214.0, 242.0, 179.0],
+            [27.0, 94.0, 32.0],
+            [58.0, 121.0, 61.0],
+            [102.0, 154.0, 77.0],
+            [205.0, 232.0, 167.0],
             [253.0, 216.0, 53.0],
             [255.0, 235.0, 59.0],
             [251.0, 140.0, 0.0],
@@ -461,6 +461,8 @@ def _build_display_image(
     )
     class_opacity_pct = np.clip(class_opacity_pct, 0.0, 100.0)
     class_pct = class_opacity_pct / 100.0
+    # Let the 1-30 band stay readable but sit further back than hotspots.
+    class_pct = np.where((v >= 1.0) & (v <= 30.0), class_pct * 0.6, class_pct)
     class_alpha = np.clip(np.rint(class_pct * 255.0), 0, 255).astype(np.uint8)
     if alpha_u8 is None:
         final_alpha = class_alpha
@@ -573,7 +575,7 @@ def _build_overlay(
         "sample_image": sample_image.name,
         "bounds_4326": bounds_4326,
         "opacity": float(opacity),
-        "opacity_mode": "class1_1_class2_10_class3_30_class4_35_class5_40_class6_45_class7_50_class8_55_class9_60_class10_70_then_plus5",
+        "opacity_mode": "custom_anchors_with_1_30_scaled_to_0p6",
         "zindex": int(zindex),
         "color_ramp": color_ramp,
         "ramp_min": float(ramp_min),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import html
 import inspect
 import importlib.util
 import json
@@ -51,6 +52,38 @@ ADMIN_BUNDLE_GPKG = "admin_boundaries.gpkg"
 LOCKED_POINTS_GPKG = "novus_locked_points.gpkg"
 BOREAL_RASTER_OVERLAY_JSON = "tathetsanalys_3000m_procent.overlay.json"
 
+LAYER_LABELS = {
+    "landskapstyp": "Landskapstyper",
+    "landskapskaraktar": "Landskapskaraktärsområden",
+    "rorligt_friluftsliv": "Rörligt friluftsliv",
+    "utbyggnad_vindkraft": "Utbyggnad av vindkraft",
+    "nature_reserve": "Naturreservat",
+    "kulturmiljovard": "Kulturmiljövård",
+    "boreal_density": "Skoglig värdekärna",
+}
+THEME_LAYER_STYLES = {
+    "rorligt_friluftsliv": "#0891b2",
+    "utbyggnad_vindkraft": "#22c55e",
+    "nature_reserve": "#a21caf",
+    "kulturmiljovard": "#f59e0b",
+}
+THEME_LAYER_SHAPES = {
+    "nature_reserve": "line",
+}
+ADMIN_LAYER_STYLES = {
+    "lan_boundary": ("Länsgräns", "#b91c1c"),
+    "kommuner": ("Kommungräns", "#4b5563"),
+    "kommungrupper": ("Kommungrupper", "#1d4ed8"),
+}
+BOREAL_LEGEND_ITEMS = [
+    ("1-30", "#1b5e20", "Mörkgrön"),
+    ("31-60", "#8bc34a", "Ljusgrön"),
+    ("61-70", "#fdd835", "Gul"),
+    ("71-80", "#fb8c00", "Orange"),
+    ("81-90", "#e53935", "Röd"),
+    ("91-94", "#7f0000", "Mörkröd"),
+]
+
 LST_BUNDLE_LAYER_BY_KEY = {
     "landskapstyp": "landskapstyp",
     "landskapskaraktar": "landskapskaraktar",
@@ -62,19 +95,19 @@ LST_BUNDLE_LAYER_BY_KEY = {
 
 # Canonical Dalarna grouping for Hemvist (QI) filtering.
 CODE_TO_GROUP_NAME = {
-    "2084": "Avesta, Hedemora, Sater",
-    "2083": "Avesta, Hedemora, Sater",
-    "2082": "Avesta, Hedemora, Sater",
-    "2080": "Falun, Borlange",
-    "2081": "Falun, Borlange",
-    "2023": "Malung-Salen, Alvdalen, Vansbro",
-    "2039": "Malung-Salen, Alvdalen, Vansbro",
-    "2021": "Malung-Salen, Alvdalen, Vansbro",
+    "2084": "Avesta, Hedemora, Säter",
+    "2083": "Avesta, Hedemora, Säter",
+    "2082": "Avesta, Hedemora, Säter",
+    "2080": "Falun, Borlänge",
+    "2081": "Falun, Borlänge",
+    "2023": "Malung-Sälen, Älvdalen, Vansbro",
+    "2039": "Malung-Sälen, Älvdalen, Vansbro",
+    "2021": "Malung-Sälen, Älvdalen, Vansbro",
     "2062": "Mora, Orsa",
     "2034": "Mora, Orsa",
-    "2031": "Rattvik, Leksand, Gagnef",
-    "2029": "Rattvik, Leksand, Gagnef",
-    "2026": "Rattvik, Leksand, Gagnef",
+    "2031": "Rättvik, Leksand, Gagnef",
+    "2029": "Rättvik, Leksand, Gagnef",
+    "2026": "Rättvik, Leksand, Gagnef",
     "2061": "Smedjebacken, Ludvika",
     "2085": "Smedjebacken, Ludvika",
 }
@@ -95,6 +128,12 @@ CODE_TO_GROUP_ID = {
     "2061": "4",
     "2085": "4",
 }
+
+GROUP_NAME_BY_ID: dict[str, str] = {}
+for _code, _group_id in CODE_TO_GROUP_ID.items():
+    _group_name = CODE_TO_GROUP_NAME.get(_code, "")
+    if _group_id and _group_name and _group_id not in GROUP_NAME_BY_ID:
+        GROUP_NAME_BY_ID[_group_id] = _group_name
 
 
 REQUIRED_CLOUD_FILES = [
@@ -284,13 +323,50 @@ def _cached_base_layers(repo_root_str: str):
     )
 
 
+def _clip_to_dalarna(gdf: gpd.GeoDataFrame, dalarna: gpd.GeoDataFrame | None) -> gpd.GeoDataFrame:
+    if gdf is None or len(gdf) == 0 or dalarna is None or len(dalarna) == 0:
+        return gdf
+    try:
+        return gpd.clip(gdf, dalarna)
+    except Exception:
+        mask = dalarna.geometry.union_all() if hasattr(dalarna.geometry, "union_all") else dalarna.geometry.unary_union
+        return gdf[gdf.geometry.intersects(mask)].copy()
+
+
 @st.cache_data(show_spinner=False, ttl=300)
 def _cached_theme_layer(repo_root_str: str, key: str):
     repo = Path(repo_root_str)
     lst_bundle = repo / "data" / "cloud" / LST_BUNDLE_GPKG
     if key not in LST_BUNDLE_LAYER_BY_KEY:
         raise KeyError(f"Unknown layer key: {key}")
-    return _read_vector_4326(lst_bundle, layer=LST_BUNDLE_LAYER_BY_KEY[key], default_crs=3006)
+    out = _read_vector_4326(lst_bundle, layer=LST_BUNDLE_LAYER_BY_KEY[key], default_crs=3006)
+    if key in {"rorligt_friluftsliv", "kulturmiljovard"}:
+        out = _clip_to_dalarna(out, _cached_lan_boundary())
+    return out
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def _cached_respondent_metadata(repo_root_str: str) -> pd.DataFrame:
+    csv_path = Path(repo_root_str) / "data" / "cloud" / "novus_full_dataframe.csv"
+    if not csv_path.exists():
+        return pd.DataFrame(columns=["record", "respid", "respondent_alder", "respondent_q1"])
+
+    df = pd.read_csv(
+        csv_path,
+        usecols=["Record", "respid", "Alder", "Q1"],
+        dtype={"Record": "string", "respid": "string", "Alder": "Int64", "Q1": "string"},
+    ).rename(
+        columns={
+            "Record": "record",
+            "Alder": "respondent_alder",
+            "Q1": "respondent_q1",
+        }
+    )
+    df["record"] = _numkey(df["record"])
+    df["respid"] = df["respid"].astype("string").str.strip()
+    df["respondent_q1"] = df["respondent_q1"].astype("string").str.strip()
+    df["respondent_alder"] = _numkey(df["respondent_alder"])
+    return df.drop_duplicates(subset=["record", "respid"], keep="first")
 
 
 def _locked_points_gpkg_path(repo_root_str: str) -> Path:
@@ -313,6 +389,7 @@ def _cached_locked_point_layers(repo_root_str: str, cache_token: str):
     _ = cache_token
     gpkg = _locked_points_gpkg_path(repo_root_str)
     admin_bundle = Path(repo_root_str) / "data" / "cloud" / ADMIN_BUNDLE_GPKG
+    respondent_meta = _cached_respondent_metadata(repo_root_str)
 
     code_to_name: dict[str, str] = {}
     code_to_gid: dict[str, str] = {}
@@ -348,9 +425,14 @@ def _cached_locked_point_layers(repo_root_str: str, cache_token: str):
         if gdf is None or len(gdf) == 0:
             return gdf
         out = gdf.copy()
+        out["record"] = _numkey(out["record"]) if "record" in out.columns else pd.Series([pd.NA] * len(out), index=out.index, dtype="string")
+        out["respid"] = out["respid"].astype("string").str.strip() if "respid" in out.columns else pd.Series([pd.NA] * len(out), index=out.index, dtype="string")
+
+        if not respondent_meta.empty:
+            out = out.merge(respondent_meta, on=["record", "respid"], how="left")
 
         resp_code = _numkey(
-            _pick_string_series(out, ["resp_kom", "home_kommunkod", "Q1", "q1", "hemvist_q1", "hemvist_kommunkod"])
+            _pick_string_series(out, ["resp_kom", "home_kommunkod", "Q1", "respondent_q1", "q1", "hemvist_q1", "hemvist_kommunkod"])
         )
         coord_code = _numkey(_pick_string_series(out, ["coord_kom", "kommunkod", "admin_2_kod"]))
 
@@ -368,6 +450,12 @@ def _cached_locked_point_layers(repo_root_str: str, cache_token: str):
         derived_home_gname = _numkey(out["home_kommunkod"]).map(CODE_TO_GROUP_NAME)
         out["home_kommungrupp_current"] = derived_home_gname.where(derived_home_gname.ne(""), pd.NA)
         out["home_kommungrupp"] = out["home_kommungrupp_current"]
+        out["home_kommunnamn"] = _numkey(out["home_kommunkod"]).map(code_to_name)
+        out["respondent_hemvist"] = (
+            out["home_kommunnamn"].fillna("").astype(str).str.strip()
+            + out["home_kommunkod"].fillna("").astype(str).map(lambda value: f" ({value})" if value else "")
+        ).str.strip()
+        out["respondent_hemvist"] = out["respondent_hemvist"].replace("", pd.NA)
 
         coord_gid = _numkey(out["coord_kom"]).map(code_to_gid)
         out["coord_kommungrupp_id_current"] = coord_gid.where(coord_gid.ne(""), pd.NA)
@@ -386,8 +474,12 @@ def _cached_locked_point_layers(repo_root_str: str, cache_token: str):
         else:
             old_grp = pd.Series([pd.NA] * len(out), index=out.index, dtype="string")
         out["kommungrupp"] = old_grp.where(old_grp.fillna("").str.strip() != "", out["home_kommungrupp_id_current"])
+        if "respondent_alder" in out.columns:
+            out["respondent_alder"] = _numkey(out["respondent_alder"])
+        if "plats_nr" in out.columns:
+            out["plats_nr"] = _numkey(out["plats_nr"])
 
-        for c in ["plats_nr", "plats_fritext", "record", "respid", "lat", "lon"]:
+        for c in ["plats_nr", "plats_fritext", "record", "respid", "lat", "lon", "respondent_alder", "home_kommunnamn", "respondent_hemvist"]:
             if c not in out.columns:
                 out[c] = pd.NA
 
@@ -764,32 +856,49 @@ def _apply_single_lst_mask(
 
     pts = points.to_crs(3006).copy()
 
-    def _safe_union(layer: gpd.GeoDataFrame):
+    def _prepared_mask(layer: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         g = layer.to_crs(3006).copy()
         g = g[g.geometry.notna() & (~g.geometry.is_empty)].copy()
         if len(g) == 0:
-            return None
+            return g
         # Repair invalid polygons before union to avoid TopologyException.
         try:
             g["geometry"] = g.geometry.make_valid()
         except Exception:
             pass
         g["geometry"] = g.geometry.buffer(0)
-        g = g[g.geometry.notna() & (~g.geometry.is_empty)].copy()
-        if len(g) == 0:
-            return None
-        try:
-            return g.geometry.union_all()
-        except Exception:
-            return g.geometry.unary_union
+        return g[g.geometry.notna() & (~g.geometry.is_empty)].copy()
 
-    mask = _safe_union(mask_layer)
-    if mask is None:
+    mask_gdf = _prepared_mask(mask_layer)
+    if len(mask_gdf) == 0:
         return pts.to_crs(4326), None
+
     if near_m > 0:
-        mask = mask.buffer(float(near_m))
-    mask_zone = gpd.GeoDataFrame({"geometry": [mask]}, geometry="geometry", crs=3006).to_crs(4326)
-    return pts[pts.geometry.intersects(mask)].to_crs(4326), mask_zone
+        mask_gdf = mask_gdf.copy()
+        mask_gdf["geometry"] = mask_gdf.geometry.buffer(float(near_m))
+
+    joined = gpd.sjoin(
+        pts,
+        mask_gdf[[mask_gdf.geometry.name]].rename(columns={mask_gdf.geometry.name: "geometry"}),
+        how="inner",
+        predicate="intersects",
+    )
+    filtered_pts = pts.loc[joined.index.unique()].copy().to_crs(4326)
+
+    mask_zone = None
+    if near_m > 0:
+        try:
+            zone_geom = mask_gdf.geometry.union_all()
+        except Exception:
+            zone_geom = mask_gdf.geometry.unary_union
+        if zone_geom is not None and not getattr(zone_geom, "is_empty", True):
+            try:
+                zone_geom = zone_geom.simplify(max(25.0, float(near_m) * 0.08), preserve_topology=True)
+            except Exception:
+                pass
+            mask_zone = gpd.GeoDataFrame({"geometry": [zone_geom]}, geometry="geometry", crs=3006).to_crs(4326)
+
+    return filtered_pts, mask_zone
 
 
 def _analysis_summary(
@@ -927,35 +1036,307 @@ def _add_lst_zone_overlay(m: folium.Map, zone: gpd.GeoDataFrame | None) -> None:
     ).add_to(m)
 
 
-def _render_boreal_density_legend() -> None:
-    legend_items = [
-        ("1-30", "#1b5e20", "Morkgron"),
-        ("31-60", "#8bc34a", "Ljusgron"),
-        ("61-70", "#fdd835", "Gul"),
-        ("71-80", "#fb8c00", "Orange"),
-        ("81-90", "#e53935", "Rod"),
-        ("91-94", "#7f0000", "Morkrod"),
-    ]
+def _attach_leaflet_view_memory(m: folium.Map, storage_key: str = "energidalarna_map_view_v1") -> None:
+    m.get_root().header.add_child(
+        folium.Element(
+            """
+            <style>
+            .leaflet-container {
+              overflow: hidden;
+            }
+            .leaflet-control-attribution {
+              margin: 0 8px 8px 0;
+            }
+            </style>
+            """
+        )
+    )
+    script = f"""
+    <script>
+    (function() {{
+      var map = {m.get_name()};
+      var storageKey = {json.dumps(storage_key)};
+      try {{
+        var saved = window.sessionStorage.getItem(storageKey);
+        if (saved) {{
+          var state = JSON.parse(saved);
+          if (state && Array.isArray(state.center) && state.center.length === 2 && typeof state.zoom === "number") {{
+            map.setView(state.center, state.zoom, {{animate: false}});
+          }}
+        }}
+      }} catch (error) {{}}
+      map.on("moveend", function() {{
+        try {{
+          var center = map.getCenter();
+          window.sessionStorage.setItem(
+            storageKey,
+            JSON.stringify({{center: [center.lat, center.lng], zoom: map.getZoom()}})
+          );
+        }} catch (error) {{}}
+      }});
+    }})();
+    </script>
+    """
+    m.get_root().script.add_child(folium.Element(script))
+
+
+def _normalize_landscape_label(value: object) -> str:
+    normalize = getattr(map_factory, "_normalize_landscape_type", None)
+    if callable(normalize):
+        return normalize(str(value))
+    return str(value)
+
+
+def _palette_map_safe(values: list[str]) -> dict[str, str]:
+    palette_map = getattr(map_factory, "_palette_map", None)
+    if callable(palette_map):
+        return palette_map(values)
+    fallback = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e", "#17becf"]
+    uniq = sorted({str(v) for v in values})
+    return {value: fallback[i % len(fallback)] for i, value in enumerate(uniq)}
+
+
+def _legend_swatch_html(color: str, shape: str = "box") -> str:
+    if shape == "line":
+        return (
+            "<span style=\"display:inline-block;width:18px;height:0;"
+            f"border-top:3px solid {color};margin-right:8px;vertical-align:middle;\"></span>"
+        )
+    if shape == "circle":
+        return (
+            "<span style=\"display:inline-block;width:14px;height:14px;border-radius:999px;"
+            f"background:{color};border:1px solid rgba(0,0,0,0.18);margin-right:8px;"
+            "vertical-align:middle;\"></span>"
+        )
+    return (
+        "<span style=\"display:inline-block;width:14px;height:14px;border-radius:4px;"
+        f"background:{color};border:1px solid rgba(0,0,0,0.18);margin-right:8px;"
+        "vertical-align:middle;\"></span>"
+    )
+
+
+def _render_legend_card(title: str, items: list[dict[str, str]], caption: str | None = None, footer: str | None = None) -> None:
     rows = []
-    for value_range, color, label in legend_items:
+    for item in items:
+        label = html.escape(str(item.get("label", "")))
+        note = str(item.get("note", "")).strip()
+        note_html = f" <span style=\"color:#6b7280;\">{html.escape(note)}</span>" if note else ""
         rows.append(
             (
-                "<div style=\"display:flex;align-items:center;gap:8px;margin:0 0 4px 0;\">"
-                f"<span style=\"display:inline-block;width:14px;height:14px;border-radius:3px;"
-                f"background:{color};border:1px solid rgba(0,0,0,0.18);\"></span>"
-                f"<span><strong>{value_range}</strong> {label}</span>"
+                "<div style=\"display:flex;align-items:flex-start;gap:0;margin:0 0 6px 0;\">"
+                f"{_legend_swatch_html(str(item.get('color', '#9ca3af')), str(item.get('shape', 'box')))}"
+                f"<span style=\"line-height:1.25;\">{label}{note_html}</span>"
                 "</div>"
             )
         )
-    st.caption("Farglegend: skoglig vardekarna")
+    body_style = "max-height:220px;overflow-y:auto;padding-right:4px;" if len(items) > 9 else ""
+    caption_html = (
+        f"<div style=\"font-size:0.82rem;color:#4b5563;margin:0 0 8px 0;\">{html.escape(caption)}</div>"
+        if caption
+        else ""
+    )
+    footer_html = (
+        f"<div style=\"font-size:0.82rem;color:#4b5563;margin:8px 0 0 0;\">{html.escape(footer)}</div>"
+        if footer
+        else ""
+    )
     st.markdown(
         (
-            "<div style=\"font-size:0.85rem;line-height:1.2;margin:-0.15rem 0 0.35rem 0;\">"
+            "<div style=\"background:#f8fafc;border:1px solid rgba(148,163,184,0.35);"
+            "border-radius:12px;padding:12px 14px;margin:0 0 12px 0;\">"
+            f"<div style=\"font-weight:700;color:#0f172a;margin:0 0 6px 0;\">{html.escape(title)}</div>"
+            f"{caption_html}"
+            f"<div style=\"font-size:0.85rem;line-height:1.2;{body_style}\">"
             + "".join(rows)
             + "</div>"
+            f"{footer_html}"
+            "</div>"
         ),
         unsafe_allow_html=True,
     )
+
+
+def _render_active_legends(
+    *,
+    show_lan_boundary: bool,
+    show_kommuner: bool,
+    show_kommungrupper: bool,
+    show_sty: bool,
+    sty: gpd.GeoDataFrame | None,
+    show_kar: bool,
+    kar: gpd.GeoDataFrame | None,
+    show_rorligt_friluftsliv: bool,
+    show_utbyggnad_vindkraft: bool,
+    show_nature_reserve: bool,
+    show_kulturmiljovard: bool,
+    show_boreal_density: bool,
+    filter_points_by_boreal: bool,
+    boreal_value_range: tuple[int, int],
+    show_plats1_points: bool,
+    show_plats2_points: bool,
+    show_sensitive_points: bool,
+    show_non_sensitive_points: bool,
+    point_buffer_m: int,
+    analysis_enabled: bool,
+    analysis_metric: str,
+    selected_lst_layer: gpd.GeoDataFrame | None,
+    analysis_blocked_multi_lst: bool,
+) -> None:
+    cards: list[dict[str, object]] = []
+
+    admin_items: list[dict[str, str]] = []
+    if show_lan_boundary:
+        label, color = ADMIN_LAYER_STYLES["lan_boundary"]
+        admin_items.append({"label": label, "color": color, "shape": "line"})
+    if show_kommuner:
+        label, color = ADMIN_LAYER_STYLES["kommuner"]
+        admin_items.append({"label": label, "color": color, "shape": "line"})
+    if show_kommungrupper:
+        label, color = ADMIN_LAYER_STYLES["kommungrupper"]
+        admin_items.append({"label": label, "color": color, "shape": "line"})
+    if admin_items:
+        cards.append(
+            {
+                "title": "Gränser",
+                "items": admin_items,
+                "caption": "Visar administrativa gränser som stöd i kartläsningen.",
+            }
+        )
+
+    if show_sty and sty is not None and len(sty) > 0:
+        field = choose_default_field(sty)
+        values = sty[field].fillna("(saknas)").astype(str).map(_normalize_landscape_label).tolist()
+        colors = _palette_map_safe(values)
+        items = [{"label": label, "color": color} for label, color in colors.items()]
+        cards.append(
+            {
+                "title": LAYER_LABELS["landskapstyp"],
+                "items": items,
+                "caption": "Färg visar landskapstyp i ytorna.",
+            }
+        )
+
+    if show_kar and kar is not None and len(kar) > 0:
+        field = choose_default_field(kar)
+        values = kar[field].fillna("(saknas)").astype(str).tolist()
+        colors = _palette_map_safe(values)
+        items = [{"label": label, "color": color} for label, color in colors.items()]
+        cards.append(
+            {
+                "title": LAYER_LABELS["landskapskaraktar"],
+                "items": items,
+                "caption": "Områdena visas transparent ovanpå baskartan.",
+            }
+        )
+
+    thematic_items: list[dict[str, str]] = []
+    for key, is_active in [
+        ("rorligt_friluftsliv", show_rorligt_friluftsliv),
+        ("utbyggnad_vindkraft", show_utbyggnad_vindkraft),
+        ("nature_reserve", show_nature_reserve),
+        ("kulturmiljovard", show_kulturmiljovard),
+    ]:
+        if is_active:
+            thematic_items.append(
+                {
+                    "label": LAYER_LABELS[key],
+                    "color": THEME_LAYER_STYLES[key],
+                    "shape": THEME_LAYER_SHAPES.get(key, "box"),
+                }
+            )
+    if thematic_items:
+        cards.append(
+            {
+                "title": "Tematiska lager",
+                "items": thematic_items,
+                "caption": "Aktiva lager från externa datakällor.",
+            }
+        )
+
+    point_layers_active = any([show_plats1_points, show_plats2_points, show_sensitive_points, show_non_sensitive_points])
+    if point_layers_active:
+        point_items = []
+        active_point_layer_labels: list[str] = []
+        if show_plats1_points:
+            active_point_layer_labels.append("Vald plats 1")
+        if show_plats2_points:
+            active_point_layer_labels.append("Vald plats 2")
+        if show_sensitive_points:
+            active_point_layer_labels.append("Extra känsliga platser")
+        if show_non_sensitive_points:
+            active_point_layer_labels.append("Inte extra känsliga platser")
+        for group_id in sorted(GROUP_NAME_BY_ID.keys(), key=lambda value: int(value)):
+            point_items.append(
+                {
+                    "label": GROUP_NAME_BY_ID[group_id],
+                    "color": getattr(map_factory, "GROUP_PALETTE", {}).get(int(group_id), "#9ca3af"),
+                    "shape": "circle",
+                }
+            )
+        if point_buffer_m > 0:
+            point_items.append(
+                {
+                    "label": f"Punktbuffert ({point_buffer_m} m)",
+                    "color": "#ef4444",
+                }
+            )
+        cards.append(
+            {
+                "title": "Betydelsefulla platser",
+                "items": point_items,
+                "caption": "Färg visar kommungrupp för aktiva punktlager.",
+                "footer": f"Aktiva lager: {', '.join(active_point_layer_labels)}.",
+            }
+        )
+
+    if show_boreal_density or filter_points_by_boreal:
+        items = [
+            {"label": value_range, "note": label, "color": color}
+            for value_range, color, label in BOREAL_LEGEND_ITEMS
+        ]
+        footer = "Lagret visas transparent ovanpå kartan." if show_boreal_density else "Filtret använder samma färgskala som lagret."
+        if filter_points_by_boreal:
+            footer = f"{footer} Aktivt filter: {int(boreal_value_range[0])}-{int(boreal_value_range[1])}."
+        cards.append(
+            {
+                "title": LAYER_LABELS["boreal_density"],
+                "items": items,
+                "caption": "Färgskalan visar täthetsvärde för skoglig värdekärna.",
+                "footer": footer,
+            }
+        )
+
+    if analysis_enabled:
+        analysis_items = [
+            {
+                "label": f"Analysbubblor: antal {analysis_metric.lower()}",
+                "color": "#3b82f6",
+                "shape": "circle",
+            }
+        ]
+        if selected_lst_layer is not None and not analysis_blocked_multi_lst:
+            analysis_items.append({"label": "Närhetszon runt valt kartlager", "color": "#0ea5e9"})
+        cards.append(
+            {
+                "title": "Punktanalys",
+                "items": analysis_items,
+                "caption": "Visas när punktanalysen är aktiverad.",
+            }
+        )
+
+    if not cards:
+        return
+
+    st.markdown("**Legender**")
+    cols = st.columns(2)
+    for idx, card in enumerate(cards):
+        with cols[idx % 2]:
+            _render_legend_card(
+                str(card.get("title", "")),
+                list(card.get("items", [])),
+                str(card["caption"]) if card.get("caption") else None,
+                str(card["footer"]) if card.get("footer") else None,
+            )
 
 
 area_mode_options = ["Hela länet", "Samtliga kommuner", "Samtliga kommungrupper"]
@@ -988,36 +1369,15 @@ with st.sidebar:
     else:
         satellite_base = st.checkbox("Satellitbakgrund", value=False)
 
-    st.subheader("Lager från Länsstyrelsens geodatakatalog")
-    show_sty = st.checkbox("Landskapstyper.lst", value=False)
-    show_kar = st.checkbox("Landskapskaraktärsområden.lst", value=False)
-    show_rorligt_friluftsliv = st.checkbox("Rörligt friluftsliv.lst", value=False)
-    show_utbyggnad_vindkraft = st.checkbox("Utbyggnad av vindkraft.lst", value=False)
-    show_nature_reserve = st.checkbox("Naturreservat.osm", value=False)
-    show_kulturmiljovard = st.checkbox("Kulturmiljövård.lst", value=False)
-    show_boreal_density = st.checkbox("Tathetsanalys boreal region (raster)", value=False)
-    filter_points_by_boreal = st.checkbox("Filtrera alla punktlager med skoglig värdekärna", value=False)
-    boreal_min_val, boreal_max_val = 1, 94
-    if show_boreal_density or filter_points_by_boreal:
-        try:
-            boreal_meta = _cached_raster_overlay(str(repo_root), BOREAL_RASTER_OVERLAY_JSON)
-            if boreal_meta is not None:
-                boreal_min_val = int(boreal_meta.get("raster_min", 1))
-                boreal_max_val = int(boreal_meta.get("raster_max", 94))
-        except Exception:
-            pass
-    if filter_points_by_boreal:
-        boreal_value_range = st.slider(
-            f"Täthetsvärde ({boreal_min_val}-{boreal_max_val})",
-            boreal_min_val,
-            boreal_max_val,
-            (boreal_min_val, boreal_max_val),
-            1,
-        )
-    if show_boreal_density or filter_points_by_boreal:
-        _render_boreal_density_legend()
-    else:
-        boreal_value_range = (boreal_min_val, boreal_max_val)
+    st.subheader("Kartlager")
+    show_sty = st.checkbox(LAYER_LABELS["landskapstyp"], value=False)
+    show_kar = st.checkbox(LAYER_LABELS["landskapskaraktar"], value=False)
+    show_rorligt_friluftsliv = st.checkbox(LAYER_LABELS["rorligt_friluftsliv"], value=False)
+    show_utbyggnad_vindkraft = st.checkbox(LAYER_LABELS["utbyggnad_vindkraft"], value=False)
+    show_nature_reserve = st.checkbox(LAYER_LABELS["nature_reserve"], value=False)
+    show_kulturmiljovard = st.checkbox(LAYER_LABELS["kulturmiljovard"], value=False)
+    show_boreal_density = st.checkbox(LAYER_LABELS["boreal_density"], value=False)
+    st.caption("Källa: Länsstyrelsen, OpenStreetMap och Naturvårdsverket")
 
     st.subheader("Betydelsefulla platser")
     st.caption("Färg visar kommungrupp.")
@@ -1030,14 +1390,46 @@ with st.sidebar:
     st.caption("Vindlager är avstängt i cloud-only-läge.")
     show_wind_turbines = False
 
+boreal_min_val, boreal_max_val = 1, 94
+try:
+    boreal_meta = _cached_raster_overlay(str(repo_root), BOREAL_RASTER_OVERLAY_JSON)
+    if boreal_meta is not None:
+        boreal_min_val = int(boreal_meta.get("raster_min", 1))
+        boreal_max_val = int(boreal_meta.get("raster_max", 94))
+except Exception:
+    pass
+
 main_col, right_col = st.columns([4.8, 1.2], gap="medium")
 with right_col:
     st.subheader("Punktbuffert")
     point_buffer_m = st.slider("Buffert runt tända punktlager (meter)", 0, 3000, 0, 100, key="point_buffer_right")
-    st.subheader("Analys")
-    analysis_enabled = st.checkbox("Aktivera analys", value=False)
-    analysis_metric = st.selectbox("Mått", ["Punkter", "Unika respondenter"], index=0)
-    analysis_near_m = st.slider("Närhetszon runt valt LST-lager (meter)", 0, 3000, 0, 50)
+    st.subheader("Punktanalys")
+    analysis_enabled = st.checkbox("Visa antal punkter i valt kartlager", value=False)
+    analysis_metric = "Punkter"
+    analysis_near_m = 0
+    if analysis_enabled:
+        analysis_metric = st.selectbox("Mått", ["Punkter", "Unika respondenter"], index=0)
+        analysis_near_m = st.slider("Närhetszon runt valt kartlager (meter)", 0, 3000, 0, 50)
+    else:
+        st.caption("Aktivera analysen för att välja mått och närhetszon.")
+
+    st.subheader(LAYER_LABELS["boreal_density"])
+    st.markdown(
+        "[Vill du veta mer om skogliga värdekärnor? Klicka här](https://geodata.naturvardsverket.se/nedladdning/Skog/Slutrapport_Landskapsanalys_av_skogliga_vardekarnor_i_boreal_region.pdf)"
+    )
+    filter_points_by_boreal = st.checkbox("Filtrera alla punktlager med skoglig värdekärna", value=False)
+    if show_boreal_density:
+        st.caption("Lagret visas på kartan. Legend visas under kartan.")
+    if filter_points_by_boreal:
+        boreal_value_range = st.slider(
+            f"Täthetsvärde ({boreal_min_val}-{boreal_max_val})",
+            boreal_min_val,
+            boreal_max_val,
+            (boreal_min_val, boreal_max_val),
+            1,
+        )
+    else:
+        boreal_value_range = (boreal_min_val, boreal_max_val)
 
 if selected_area == "Hela länet":
     area_kind, area_value = "lan", ""
@@ -1175,7 +1567,8 @@ if show_plats1_points or show_plats2_points or show_sensitive_points or show_non
     if filter_points_by_boreal:
         sampler = _cached_raster_sampler(str(repo_root), BOREAL_RASTER_OVERLAY_JSON)
         if sampler is None:
-            st.sidebar.warning("Skoglig raster för filtrering saknas. Bygg overlay först.")
+            with right_col:
+                st.warning("Rasterunderlag för skoglig värdekärna saknas. Bygg overlay först.")
         else:
             vmin, vmax = int(boreal_value_range[0]), int(boreal_value_range[1])
             plats1_points = _filter_points_by_raster_range(plats1_points, sampler, vmin, vmax)
@@ -1183,7 +1576,7 @@ if show_plats1_points or show_plats2_points or show_sensitive_points or show_non
             sensitive_points = _filter_points_by_raster_range(sensitive_points, sampler, vmin, vmax)
             non_sensitive_points = _filter_points_by_raster_range(non_sensitive_points, sampler, vmin, vmax)
             with right_col:
-                st.caption(f"Rasterfilter aktivt: skoglig värdekärna {vmin}-{vmax}.")
+                st.caption(f"Filter aktivt: skoglig värdekärna {vmin}-{vmax}.")
 
     after_counts = {
         "Vald plats 1": len(plats1_points) if plats1_points is not None else 0,
@@ -1262,30 +1655,28 @@ if show_plats1_points or show_plats2_points or show_sensitive_points or show_non
             )
 
 if filter_points_by_boreal:
-    st.sidebar.subheader("Rasterfilter: före/efter")
-    vmin, vmax = int(boreal_value_range[0]), int(boreal_value_range[1])
-    st.sidebar.caption(
-        f"Arbetsområde: {_analysis_scope_label(area_kind, area_value)} | Värdeintervall: {vmin}-{vmax}"
-    )
-    st.sidebar.caption("Före/efter avser rasterfiltret, efter arbetsområdesfilter.")
-    if point_filter_totals is not None:
-        c1, c2 = st.sidebar.columns(2)
-        c1.metric("Före (visas)", int(point_filter_totals["before_visible"]))
-        c2.metric("Efter (visas)", int(point_filter_totals["after_visible"]))
-        st.sidebar.caption(f"Andel kvar (visas): {float(point_filter_totals['keep_visible_pct']):.1f}%")
-        c3, c4 = st.sidebar.columns(2)
-        c3.metric("Före (alla)", int(point_filter_totals["before_all"]))
-        c4.metric("Efter (alla)", int(point_filter_totals["after_all"]))
-        st.sidebar.caption(f"Andel kvar (alla): {float(point_filter_totals['keep_all_pct']):.1f}%")
-    if point_filter_stats_rows:
-        st.sidebar.dataframe(
-            pd.DataFrame(point_filter_stats_rows),
-            use_container_width=True,
-            hide_index=True,
-            height=220,
+    with right_col:
+        st.subheader("Filterresultat")
+        vmin, vmax = int(boreal_value_range[0]), int(boreal_value_range[1])
+        st.caption(
+            f"Arbetsområde: {_analysis_scope_label(area_kind, area_value)} | Värdeintervall: {vmin}-{vmax}"
         )
-    else:
-        st.sidebar.info("Inga punktlager är inlästa för valt arbetsområde.")
+        st.caption("Före/efter avser rasterfiltret, efter arbetsområdesfilter.")
+        if point_filter_totals is not None:
+            c1, c2 = st.columns(2)
+            c1.metric("Före", int(point_filter_totals["before_visible"]))
+            c2.metric("Efter", int(point_filter_totals["after_visible"]))
+            st.caption(f"Andel kvar i kartan: {float(point_filter_totals['keep_visible_pct']):.1f}%")
+            if point_filter_stats_rows:
+                with st.expander("Visa före/efter per punktlager"):
+                    st.dataframe(
+                        pd.DataFrame(point_filter_stats_rows),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=220,
+                    )
+        else:
+            st.info("Inga punktlager är inlästa för valt arbetsområde.")
 
 wind_turbines = None
 if show_wind_turbines:
@@ -1315,6 +1706,8 @@ if show_boreal_density:
                 "Raster overlay saknas. Kor scripts/11_prepare_raster_overlay.py for att skapa en komprimerad overlay."
             )
         else:
+            boreal_overlay = dict(boreal_overlay)
+            boreal_overlay["name"] = LAYER_LABELS["boreal_density"]
             extra_image_overlays.append(boreal_overlay)
     except Exception as exc:
         st.sidebar.warning(f"Kunde inte lasa rasteroverlay: {exc}")
@@ -1350,8 +1743,11 @@ m = _build_map_compat(
     show_wind_turbines=show_wind_turbines,
     satellite_base=satellite_base,
     extra_image_overlays=extra_image_overlays,
+    show_map_legend=False,
 )
 
+selected_lst_layer = None
+analysis_blocked_multi_lst = False
 if analysis_enabled:
     analysis_pts = _analysis_points(
         show_plats1_points,
@@ -1373,14 +1769,12 @@ if analysis_enabled:
             layer = theme_layers[key]
             lst_active_layers.append((key, layer, choose_default_field(layer)))
 
-    selected_lst_layer = None
-    analysis_blocked_multi_lst = False
     with right_col:
         if len(lst_active_layers) > 1:
-            st.warning("Analysen stöder max ett LST-lager åt gången. Släck till ett lager för maskad analys.")
+            st.warning("Punktanalysen stöder ett aktivt kartlager åt gången. Släck till ett lager för maskad analys.")
             analysis_blocked_multi_lst = True
         elif len(lst_active_layers) == 1:
-            st.caption("Analysläge: arbetsområde + 1 aktivt LST-lager.")
+            st.caption("Punktanalys: arbetsområde + ett aktivt kartlager.")
             selected_key, selected_lst_layer, selected_field = lst_active_layers[0]
             if selected_field is not None and selected_field in selected_lst_layer.columns:
                 vals = (
@@ -1403,7 +1797,7 @@ if analysis_enabled:
                         ].copy()
                         st.caption(f"Kategori: {selected_cat}")
         else:
-            st.caption("Analysläge: endast arbetsområde (inget aktivt LST-lager).")
+            st.caption("Punktanalys: endast arbetsområde.")
 
     if analysis_blocked_multi_lst:
         q_suffix = " utan LST-mask (flera LST-lager är tända)"
@@ -1425,16 +1819,43 @@ if analysis_enabled:
         bubbles_drawn = _add_analysis_bubbles(m, summary)
     with right_col:
         if analysis_blocked_multi_lst:
-            st.caption("Analys pausad: välj högst ett LST-lager.")
+            st.caption("Punktanalysen är pausad: välj högst ett kartlager.")
         elif summary is not None and len(summary) > 0:
-            st.caption(f"Analysen visar {analysis_metric.lower()} i {len(summary)} arbetsområde(n). Summa n: {int(summary['n'].sum())}.")
+            st.caption(f"Punktanalysen visar {analysis_metric.lower()} i {len(summary)} arbetsområde(n). Summa n: {int(summary['n'].sum())}.")
             if bubbles_drawn == 0:
                 st.warning("Analysresultat finns men bubblor kunde inte ritas (geometriproblem).")
         else:
-            st.caption("Ingen träff i analysen med nuvarande val.")
+            st.caption("Ingen träff i punktanalysen med nuvarande val.")
+
+_attach_leaflet_view_memory(m)
 
 with main_col:
     try:
-        folium_static(m, width=1200, height=920)
+        folium_static(m, width=None, height=920)
     except Exception:
         components.html(m.get_root().render(), height=920, scrolling=False)
+    _render_active_legends(
+        show_lan_boundary=show_lan_boundary,
+        show_kommuner=show_kommuner,
+        show_kommungrupper=show_kommungrupper,
+        show_sty=show_sty,
+        sty=sty if show_sty else None,
+        show_kar=show_kar,
+        kar=kar if show_kar else None,
+        show_rorligt_friluftsliv=show_rorligt_friluftsliv,
+        show_utbyggnad_vindkraft=show_utbyggnad_vindkraft,
+        show_nature_reserve=show_nature_reserve,
+        show_kulturmiljovard=show_kulturmiljovard,
+        show_boreal_density=show_boreal_density,
+        filter_points_by_boreal=filter_points_by_boreal,
+        boreal_value_range=(int(boreal_value_range[0]), int(boreal_value_range[1])),
+        show_plats1_points=show_plats1_points,
+        show_plats2_points=show_plats2_points,
+        show_sensitive_points=show_sensitive_points,
+        show_non_sensitive_points=show_non_sensitive_points,
+        point_buffer_m=point_buffer_m,
+        analysis_enabled=analysis_enabled,
+        analysis_metric=analysis_metric,
+        selected_lst_layer=selected_lst_layer,
+        analysis_blocked_multi_lst=analysis_blocked_multi_lst,
+    )
