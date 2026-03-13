@@ -13,7 +13,7 @@
     ]
   ],
   "opacity": 1.0,
-  "opacity_mode": "custom_anchors_with_1_30_scaled_to_0p6",
+  "opacity_mode": "custom_anchors_with_1_30_floor_0p08_scale_0p75",
   "zindex": 5,
   "color_ramp": "forest_heat",
   "ramp_min": 1.0,
@@ -23,7 +23,7 @@
   "source_crs": "EPSG:3006",
   "source_tif": "data\\cloud\\tathetsanalys_3000m_procent_lan_clip.png",
   "source_tfw": "data\\cloud\\tathetsanalys_3000m_procent_lan_clip.wld",
-  "clip_admin_gpkg": "data\\cloud\\admin_boundaries.gpkg",
+  "clip_admin_gpkg": "C:\\gislab\\energiplanering_dalarna\\data\\cloud\\admin_boundaries.gpkg",
   "clip_admin_layer": "lan",
   "crop_to_mask_bbox": false,
   "original_size_px": [

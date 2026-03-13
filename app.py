@@ -76,7 +76,7 @@ ADMIN_LAYER_STYLES = {
     "kommungrupper": ("Kommungrupper", "#1d4ed8"),
 }
 BOREAL_LEGEND_ITEMS = [
-    ("1-30", "#1b5e20", "Mörkgrön"),
+    ("1-30", "linear-gradient(90deg, rgba(27,94,32,0.08) 0%, rgba(27,94,32,0.60) 100%)", "Transparent mörkgrön"),
     ("31-60", "#8bc34a", "Ljusgrön"),
     ("61-70", "#fdd835", "Gul"),
     ("71-80", "#fb8c00", "Orange"),
@@ -1301,7 +1301,7 @@ def _render_active_legends(
             {
                 "title": LAYER_LABELS["boreal_density"],
                 "items": items,
-                "caption": "Färgskalan visar täthetsvärde för skoglig värdekärna.",
+                "caption": "Färgskalan visar täthetsvärde för skoglig värdekärna. Låga värden visas mer transparent.",
                 "footer": footer,
             }
         )
