@@ -19,6 +19,15 @@ BOUNDS_CRS = "EPSG:4326"
 DISPLAY_CRS = "EPSG:3857"
 
 
+def _portable_path_str(path: Path, repo_root: Path | None = None) -> str:
+    try:
+        if repo_root is not None:
+            return path.resolve().relative_to(repo_root.resolve()).as_posix()
+    except Exception:
+        pass
+    return path.as_posix()
+
+
 def _parse_world_file(path: Path) -> tuple[float, float, float, float, float, float]:
     lines = [ln.strip() for ln in path.read_text(encoding="utf-8", errors="ignore").splitlines() if ln.strip()]
     if len(lines) < 6:
@@ -692,6 +701,7 @@ def _build_overlay(
     if not source_tif.exists():
         raise FileNotFoundError(f"Missing source tif: {source_tif}")
 
+    repo_root = Path(__file__).resolve().parents[1]
     tfw = _find_world_file(source_tif, source_tfw)
     world_params = _parse_world_file(tfw)
     clip_geom = None
@@ -787,9 +797,9 @@ def _build_overlay(
         "source_crs": source_crs,
         "sample_crs": source_crs,
         "leaflet_image_crs": DISPLAY_CRS,
-        "source_tif": str(source_tif),
-        "source_tfw": str(tfw),
-        "clip_admin_gpkg": str(clip_admin_gpkg) if clip_admin_gpkg is not None else "",
+        "source_tif": _portable_path_str(source_tif, repo_root=repo_root),
+        "source_tfw": _portable_path_str(tfw, repo_root=repo_root),
+        "clip_admin_gpkg": _portable_path_str(clip_admin_gpkg, repo_root=repo_root) if clip_admin_gpkg is not None else "",
         "clip_admin_layer": clip_admin_layer if clip_admin_gpkg is not None else "",
         "crop_to_mask_bbox": bool(crop_to_mask_bbox),
         "source_window_px": [float(source_window[0]), float(source_window[1]), float(source_window[2]), float(source_window[3])],

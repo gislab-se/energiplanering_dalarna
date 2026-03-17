@@ -546,13 +546,34 @@ def _parse_world_file(path: Path) -> tuple[float, float, float, float, float, fl
 
 
 def _resolve_overlay_path(cfg_path: Path, repo_root: Path, raw_value: str) -> Path:
-    candidate = Path(raw_value)
-    if candidate.is_absolute():
-        return candidate
-    repo_candidate = (repo_root / candidate).resolve()
-    if repo_candidate.exists():
-        return repo_candidate
-    return (cfg_path.parent / candidate).resolve()
+    raw = str(raw_value).strip()
+    normalized = raw.replace("\\", "/")
+    candidates: list[Path] = []
+    for value in [normalized, raw]:
+        if not value:
+            continue
+        p = Path(value)
+        if p not in candidates:
+            candidates.append(p)
+
+    resolved: list[Path] = []
+    for candidate in candidates:
+        if candidate.is_absolute():
+            resolved.append(candidate)
+        else:
+            resolved.append((repo_root / candidate).resolve())
+            resolved.append((cfg_path.parent / candidate).resolve())
+
+    seen: set[str] = set()
+    for candidate in resolved:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.exists():
+            return candidate
+
+    return resolved[0] if resolved else Path(raw)
 
 
 def _current_world_params(

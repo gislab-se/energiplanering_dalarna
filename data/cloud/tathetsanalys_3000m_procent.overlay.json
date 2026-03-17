@@ -23,9 +23,9 @@
   "source_crs": "EPSG:3006",
   "sample_crs": "EPSG:3006",
   "leaflet_image_crs": "EPSG:3857",
-  "source_tif": "data\\cloud\\tathetsanalys_3000m_procent_lan_clip.tif",
-  "source_tfw": "data\\cloud\\tathetsanalys_3000m_procent_lan_clip.tfw",
-  "clip_admin_gpkg": "C:\\gislab\\energiplanering_dalarna\\data\\cloud\\admin_boundaries.gpkg",
+  "source_tif": "data/cloud/tathetsanalys_3000m_procent_lan_clip.tif",
+  "source_tfw": "data/cloud/tathetsanalys_3000m_procent_lan_clip.tfw",
+  "clip_admin_gpkg": "data/cloud/admin_boundaries.gpkg",
   "clip_admin_layer": "lan",
   "crop_to_mask_bbox": false,
   "source_window_px": [
