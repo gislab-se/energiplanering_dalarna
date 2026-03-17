@@ -8,11 +8,15 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 from PIL import Image, ImageDraw
-from pyproj import Transformer
+from pyproj import CRS, Transformer
+from shapely import contains_xy
+from shapely.ops import transform as shapely_transform
 
 # Input rasters are local/trusted project data and can be very large.
 # Disable Pillow's decompression bomb guard for this utility script.
 Image.MAX_IMAGE_PIXELS = None
+BOUNDS_CRS = "EPSG:4326"
+DISPLAY_CRS = "EPSG:3857"
 
 
 def _parse_world_file(path: Path) -> tuple[float, float, float, float, float, float]:
@@ -81,6 +85,33 @@ def _world_to_pixel(
     return col, row
 
 
+def _world_to_pixel_np(
+    x,
+    y,
+    a: float,
+    d: float,
+    b: float,
+    e: float,
+    c: float,
+    f: float,
+):
+    det = (a * e) - (b * d)
+    if det == 0:
+        raise RuntimeError("Invalid geotransform: determinant is zero.")
+    dx = x - c
+    dy = y - f
+    col = ((e * dx) - (b * dy)) / det
+    row = ((-d * dx) + (a * dy)) / det
+    return col, row
+
+
+def _same_crs(lhs: str, rhs: str) -> bool:
+    try:
+        return CRS.from_user_input(lhs) == CRS.from_user_input(rhs)
+    except Exception:
+        return str(lhs).strip().lower() == str(rhs).strip().lower()
+
+
 def _bounds_4326_from_world_file(
     width: int,
     height: int,
@@ -95,7 +126,7 @@ def _bounds_4326_from_world_file(
         (-0.5, height - 0.5),
     ]
     corners_xy = [_pixel_to_world(px, py, a, d, b, e, c, f) for px, py in corners_px]
-    transformer = Transformer.from_crs(source_crs, "EPSG:4326", always_xy=True)
+    transformer = Transformer.from_crs(source_crs, BOUNDS_CRS, always_xy=True)
     corners_ll = [transformer.transform(x, y) for x, y in corners_xy]
     lons = [p[0] for p in corners_ll]
     lats = [p[1] for p in corners_ll]
@@ -120,7 +151,7 @@ def _bounds_4326_for_source_window(
         (window_left - 0.5, window_bottom - 0.5),
     ]
     corners_xy = [_pixel_to_world(px, py, a, d, b, e, c, f) for px, py in corners_px]
-    transformer = Transformer.from_crs(source_crs, "EPSG:4326", always_xy=True)
+    transformer = Transformer.from_crs(source_crs, BOUNDS_CRS, always_xy=True)
     corners_ll = [transformer.transform(x, y) for x, y in corners_xy]
     lons = [p[0] for p in corners_ll]
     lats = [p[1] for p in corners_ll]
@@ -189,6 +220,48 @@ def _target_size(width: int, height: int, max_width: int, max_height: int) -> tu
     out_w = max(1, int(round(width * scale)))
     out_h = max(1, int(round(height * scale)))
     return out_w, out_h
+
+
+def _current_world_params(
+    image_width: int,
+    image_height: int,
+    source_window: tuple[float, float, float, float],
+    world_params: tuple[float, float, float, float, float, float],
+) -> tuple[float, float, float, float, float, float]:
+    if image_width <= 0 or image_height <= 0:
+        raise RuntimeError("Image dimensions must be positive.")
+    left, top, right, bottom = source_window
+    sx = (right - left) / float(image_width)
+    sy = (bottom - top) / float(image_height)
+    ox = (left - 0.5) + (0.5 * sx)
+    oy = (top - 0.5) + (0.5 * sy)
+    a, d, b, e, c, f = world_params
+    return (
+        a * sx,
+        d * sx,
+        b * sy,
+        e * sy,
+        (a * ox) + (b * oy) + c,
+        (d * ox) + (e * oy) + f,
+    )
+
+
+def _world_extent(
+    width: int,
+    height: int,
+    world_params: tuple[float, float, float, float, float, float],
+) -> tuple[float, float, float, float]:
+    a, d, b, e, c, f = world_params
+    corners_px = [
+        (-0.5, -0.5),
+        (width - 0.5, -0.5),
+        (width - 0.5, height - 0.5),
+        (-0.5, height - 0.5),
+    ]
+    corners_xy = [_pixel_to_world(px, py, a, d, b, e, c, f) for px, py in corners_px]
+    xs = [pt[0] for pt in corners_xy]
+    ys = [pt[1] for pt in corners_xy]
+    return min(xs), min(ys), max(xs), max(ys)
 
 
 def _resize_tiled(
@@ -282,7 +355,7 @@ def _apply_clip_mask_and_crop(
     world_params: tuple[float, float, float, float, float, float],
     source_crs: str,
     crop_to_mask_bbox: bool,
-) -> tuple[Image.Image, list[list[float]]]:
+) -> tuple[Image.Image, tuple[float, float, float, float]]:
     out_w, out_h = image.size
     sx_scale = src_width / out_w
     sy_scale = src_height / out_h
@@ -312,25 +385,127 @@ def _apply_clip_mask_and_crop(
     rgba.putalpha(mask)
 
     if not crop_to_mask_bbox:
-        bounds = _bounds_4326_from_world_file(src_width, src_height, world_params, source_crs)
-        return rgba, bounds
+        return rgba, (0.0, 0.0, float(src_width), float(src_height))
 
     left, top, right, bottom = bbox
     cropped = rgba.crop((left, top, right, bottom))
+    return cropped, (left * sx_scale, top * sy_scale, right * sx_scale, bottom * sy_scale)
 
-    src_left = left * sx_scale
-    src_top = top * sy_scale
-    src_right = right * sx_scale
-    src_bottom = bottom * sy_scale
-    bounds = _bounds_4326_for_source_window(
-        window_left=src_left,
-        window_top=src_top,
-        window_right=src_right,
-        window_bottom=src_bottom,
-        world_params=world_params,
-        source_crs=source_crs,
+
+def _reproject_value_alpha_to_leaflet(
+    value_u8: np.ndarray,
+    alpha_u8: np.ndarray | None,
+    current_world_params: tuple[float, float, float, float, float, float],
+    source_crs: str,
+    chunk_rows: int = 128,
+) -> tuple[np.ndarray, np.ndarray | None, tuple[float, float, float, float, float, float], list[list[float]]]:
+    # Leaflet renders the map in Web Mercator, so the display image must be linear in 3857.
+    src_h, src_w = value_u8.shape
+    if _same_crs(source_crs, DISPLAY_CRS):
+        bounds_4326 = _bounds_4326_from_world_file(src_w, src_h, current_world_params, source_crs)
+        return value_u8, alpha_u8, current_world_params, bounds_4326
+
+    src_minx, src_miny, src_maxx, src_maxy = _world_extent(src_w, src_h, current_world_params)
+    source_to_display = Transformer.from_crs(source_crs, DISPLAY_CRS, always_xy=True)
+    disp_minx, disp_miny, disp_maxx, disp_maxy = source_to_display.transform_bounds(
+        src_minx,
+        src_miny,
+        src_maxx,
+        src_maxy,
+        densify_pts=21,
     )
-    return cropped, bounds
+    target_h, target_w = src_h, src_w
+    out_values = np.zeros((target_h, target_w), dtype=np.uint8)
+    out_alpha = np.zeros((target_h, target_w), dtype=np.uint8)
+    disp_dx = (disp_maxx - disp_minx) / float(target_w)
+    disp_dy = (disp_maxy - disp_miny) / float(target_h)
+    target_world_params = (
+        disp_dx,
+        0.0,
+        0.0,
+        -disp_dy,
+        disp_minx + (0.5 * disp_dx),
+        disp_maxy - (0.5 * disp_dy),
+    )
+    x_centers = disp_minx + ((np.arange(target_w, dtype=np.float64) + 0.5) / float(target_w)) * (disp_maxx - disp_minx)
+    transformer = Transformer.from_crs(DISPLAY_CRS, source_crs, always_xy=True)
+
+    for row0 in range(0, target_h, chunk_rows):
+        row1 = min(target_h, row0 + chunk_rows)
+        y_centers = disp_maxy - ((np.arange(row0, row1, dtype=np.float64) + 0.5) / float(target_h)) * (disp_maxy - disp_miny)
+        x_grid = np.broadcast_to(x_centers[None, :], (row1 - row0, target_w))
+        y_grid = np.broadcast_to(y_centers[:, None], (row1 - row0, target_w))
+
+        x_src, y_src = transformer.transform(x_grid, y_grid)
+        src_col, src_row = _world_to_pixel_np(x_src, y_src, *current_world_params)
+        inside = (
+            np.isfinite(src_col)
+            & np.isfinite(src_row)
+            & (src_col >= -0.5)
+            & (src_col <= (src_w - 0.5))
+            & (src_row >= -0.5)
+            & (src_row <= (src_h - 0.5))
+        )
+        if not np.any(inside):
+            continue
+
+        src_col_idx = np.clip(np.rint(src_col[inside]).astype(np.int64), 0, src_w - 1)
+        src_row_idx = np.clip(np.rint(src_row[inside]).astype(np.int64), 0, src_h - 1)
+        sampled_values = value_u8[src_row_idx, src_col_idx]
+
+        chunk_values = out_values[row0:row1]
+        chunk_values[inside] = sampled_values
+
+        chunk_alpha = out_alpha[row0:row1]
+        if alpha_u8 is None:
+            chunk_alpha[inside] = 255
+        else:
+            chunk_alpha[inside] = alpha_u8[src_row_idx, src_col_idx]
+
+    if alpha_u8 is None:
+        alpha_out: np.ndarray | None = out_alpha
+    else:
+        alpha_out = out_alpha
+    bounds_4326 = _bounds_4326_from_world_file(target_w, target_h, target_world_params, DISPLAY_CRS)
+    return out_values, alpha_out, target_world_params, bounds_4326
+
+
+def _apply_leaflet_clip_mask(
+    value_u8: np.ndarray,
+    alpha_u8: np.ndarray | None,
+    clip_geom_src_crs,
+    source_crs: str,
+    target_crs: str,
+    target_world_params: tuple[float, float, float, float, float, float],
+    chunk_rows: int = 256,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    if clip_geom_src_crs is None or getattr(clip_geom_src_crs, "is_empty", True):
+        return value_u8, alpha_u8
+
+    clip_geom_target = shapely_transform(
+        Transformer.from_crs(source_crs, target_crs, always_xy=True).transform,
+        clip_geom_src_crs,
+    )
+    if clip_geom_target is None or getattr(clip_geom_target, "is_empty", True):
+        return value_u8, alpha_u8
+
+    out_h, out_w = value_u8.shape
+    minx, miny, maxx, maxy = _world_extent(out_w, out_h, target_world_params)
+    xs = minx + ((np.arange(out_w, dtype=np.float64) + 0.5) / float(out_w)) * (maxx - minx)
+    out_values = value_u8.copy()
+    out_alpha = None if alpha_u8 is None else alpha_u8.copy()
+
+    for row0 in range(0, out_h, chunk_rows):
+        row1 = min(out_h, row0 + chunk_rows)
+        ys = maxy - ((np.arange(row0, row1, dtype=np.float64) + 0.5) / float(out_h)) * (maxy - miny)
+        xx = np.broadcast_to(xs[None, :], (row1 - row0, out_w))
+        yy = np.broadcast_to(ys[:, None], (row1 - row0, out_w))
+        inside = contains_xy(clip_geom_target, xx, yy)
+        out_values[row0:row1][~inside] = 0
+        if out_alpha is not None:
+            out_alpha[row0:row1][~inside] = 0
+
+    return out_values, out_alpha
 
 
 def _extract_value_and_alpha(img: Image.Image) -> tuple[np.ndarray, np.ndarray | None]:
@@ -525,7 +700,7 @@ def _build_overlay(
 
     with Image.open(source_tif) as src:
         original_size = src.size
-        bounds_4326 = _bounds_4326_from_world_file(src.width, src.height, world_params, source_crs)
+        source_window = (0.0, 0.0, float(src.width), float(src.height))
         # Resize first (while still in source mode), then convert for PNG export.
         try:
             out_img = _resize_if_needed(src, max_width=max_width, max_height=max_height, resample_name=resample)
@@ -534,7 +709,7 @@ def _build_overlay(
             out_img = _resize_tiled(src, max_width=max_width, max_height=max_height, resample_name=resample)
 
         if clip_geom is not None:
-            out_img, bounds_4326 = _apply_clip_mask_and_crop(
+            out_img, source_window = _apply_clip_mask_and_crop(
                 image=out_img,
                 clip_geom_src_crs=clip_geom,
                 src_width=src.width,
@@ -545,9 +720,17 @@ def _build_overlay(
             )
 
         value_u8, alpha_u8 = _extract_value_and_alpha(out_img)
-        valid = value_u8
-        if alpha_u8 is not None:
-            valid = value_u8[alpha_u8 > 0]
+        current_world_params = _current_world_params(
+            image_width=value_u8.shape[1],
+            image_height=value_u8.shape[0],
+            source_window=source_window,
+            world_params=world_params,
+        )
+        sample_values = value_u8
+        sample_alpha = alpha_u8
+        valid = sample_values
+        if sample_alpha is not None:
+            valid = sample_values[sample_alpha > 0]
         valid = valid[valid > 0]
         if valid.size > 0:
             raster_min = int(valid.min())
@@ -556,15 +739,29 @@ def _build_overlay(
             raster_min, raster_max = 0, 0
 
         sample_image.parent.mkdir(parents=True, exist_ok=True)
-        if alpha_u8 is None:
-            sample_img = Image.fromarray(value_u8, mode="L")
+        if sample_alpha is None:
+            sample_img = Image.fromarray(sample_values, mode="L")
         else:
-            sample_img = Image.fromarray(np.dstack([value_u8, alpha_u8]), mode="LA")
+            sample_img = Image.fromarray(np.dstack([sample_values, sample_alpha]), mode="LA")
         sample_img.save(sample_image, format="PNG", optimize=True, compress_level=9)
 
+        display_values, display_alpha, display_world_params, bounds_4326 = _reproject_value_alpha_to_leaflet(
+            value_u8=sample_values,
+            alpha_u8=sample_alpha,
+            current_world_params=current_world_params,
+            source_crs=source_crs,
+        )
+        display_values, display_alpha = _apply_leaflet_clip_mask(
+            value_u8=display_values,
+            alpha_u8=display_alpha,
+            clip_geom_src_crs=clip_geom,
+            source_crs=source_crs,
+            target_crs=DISPLAY_CRS,
+            target_world_params=display_world_params,
+        )
         display_img = _build_display_image(
-            value_u8=value_u8,
-            alpha_u8=alpha_u8,
+            value_u8=display_values,
+            alpha_u8=display_alpha,
             color_ramp=color_ramp,
             ramp_min=ramp_min,
             ramp_max=ramp_max,
@@ -588,11 +785,14 @@ def _build_overlay(
         "raster_min": int(raster_min),
         "raster_max": int(raster_max),
         "source_crs": source_crs,
+        "sample_crs": source_crs,
+        "leaflet_image_crs": DISPLAY_CRS,
         "source_tif": str(source_tif),
         "source_tfw": str(tfw),
         "clip_admin_gpkg": str(clip_admin_gpkg) if clip_admin_gpkg is not None else "",
         "clip_admin_layer": clip_admin_layer if clip_admin_gpkg is not None else "",
         "crop_to_mask_bbox": bool(crop_to_mask_bbox),
+        "source_window_px": [float(source_window[0]), float(source_window[1]), float(source_window[2]), float(source_window[3])],
         "original_size_px": [int(original_size[0]), int(original_size[1])],
         "output_size_px": [int(output_size[0]), int(output_size[1])],
         "sample_size_px": [int(sample_size[0]), int(sample_size[1])],

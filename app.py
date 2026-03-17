@@ -16,6 +16,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image
+from pyproj import Transformer
 from streamlit_folium import folium_static
 from shapely.geometry import Point
 
@@ -536,15 +537,73 @@ def _cached_raster_overlay(repo_root_str: str, overlay_json: str):
     }
 
 
+def _parse_world_file(path: Path) -> tuple[float, float, float, float, float, float]:
+    lines = [ln.strip() for ln in path.read_text(encoding="utf-8", errors="ignore").splitlines() if ln.strip()]
+    if len(lines) < 6:
+        raise RuntimeError(f"World file must contain 6 numeric rows: {path}")
+    vals = [float(lines[i]) for i in range(6)]
+    return vals[0], vals[1], vals[2], vals[3], vals[4], vals[5]
+
+
+def _resolve_overlay_path(cfg_path: Path, repo_root: Path, raw_value: str) -> Path:
+    candidate = Path(raw_value)
+    if candidate.is_absolute():
+        return candidate
+    repo_candidate = (repo_root / candidate).resolve()
+    if repo_candidate.exists():
+        return repo_candidate
+    return (cfg_path.parent / candidate).resolve()
+
+
+def _current_world_params(
+    image_width: int,
+    image_height: int,
+    source_window: tuple[float, float, float, float],
+    world_params: tuple[float, float, float, float, float, float],
+) -> tuple[float, float, float, float, float, float]:
+    left, top, right, bottom = source_window
+    sx = (right - left) / float(image_width)
+    sy = (bottom - top) / float(image_height)
+    ox = (left - 0.5) + (0.5 * sx)
+    oy = (top - 0.5) + (0.5 * sy)
+    a, d, b, e, c, f = world_params
+    return (
+        a * sx,
+        d * sx,
+        b * sy,
+        e * sy,
+        (a * ox) + (b * oy) + c,
+        (d * ox) + (e * oy) + f,
+    )
+
+
+def _world_to_pixel_np(
+    x,
+    y,
+    a: float,
+    d: float,
+    b: float,
+    e: float,
+    c: float,
+    f: float,
+):
+    det = (a * e) - (b * d)
+    if det == 0:
+        raise RuntimeError("Invalid geotransform: determinant is zero.")
+    dx = x - c
+    dy = y - f
+    col = ((e * dx) - (b * dy)) / det
+    row = ((-d * dx) + (a * dy)) / det
+    return col, row
+
+
 @st.cache_data(show_spinner=False, ttl=300)
 def _cached_raster_sampler(repo_root_str: str, overlay_json: str):
+    repo_root = Path(repo_root_str)
     cfg_path = Path(repo_root_str) / "data" / "cloud" / overlay_json
     if not cfg_path.exists():
         return None
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-    bounds_raw = cfg.get("bounds_4326")
-    if not isinstance(bounds_raw, list) or len(bounds_raw) != 2:
-        return None
 
     sample_name = str(cfg.get("sample_image", cfg.get("image", ""))).strip()
     if not sample_name:
@@ -567,19 +626,41 @@ def _cached_raster_sampler(repo_root_str: str, overlay_json: str):
     else:
         return None
 
-    bounds = [
-        [float(bounds_raw[0][0]), float(bounds_raw[0][1])],
-        [float(bounds_raw[1][0]), float(bounds_raw[1][1])],
-    ]
+    tfw_raw = str(cfg.get("source_tfw", "")).strip()
+    if not tfw_raw:
+        return None
+    tfw_path = _resolve_overlay_path(cfg_path, repo_root, tfw_raw)
+    if not tfw_path.exists():
+        return None
+
+    source_window_raw = cfg.get("source_window_px")
+    if not isinstance(source_window_raw, list) or len(source_window_raw) != 4:
+        return None
+
+    sample_crs = str(cfg.get("sample_crs", cfg.get("source_crs", "EPSG:3006"))).strip() or "EPSG:3006"
+    world_params = _parse_world_file(tfw_path)
+    sample_world_params = _current_world_params(
+        image_width=values.shape[1],
+        image_height=values.shape[0],
+        source_window=(
+            float(source_window_raw[0]),
+            float(source_window_raw[1]),
+            float(source_window_raw[2]),
+            float(source_window_raw[3]),
+        ),
+        world_params=world_params,
+    )
     rmin = int(cfg.get("raster_min", 1))
     rmax = int(cfg.get("raster_max", 94))
     return {
         "values": values,
         "alpha": alpha,
-        "bounds": bounds,
+        "sample_crs": sample_crs,
+        "sample_world_params": sample_world_params,
         "raster_min": rmin,
         "raster_max": rmax,
         "sample_path": str(sample_path),
+        "source_tfw": str(tfw_path),
     }
 
 
@@ -593,21 +674,40 @@ def _attach_raster_values(gdf: gpd.GeoDataFrame | None, sampler: dict | None, ou
 
     vals = sampler["values"]
     alpha = sampler["alpha"]
+    sample_crs = str(sampler.get("sample_crs", "EPSG:3006"))
+    sample_world_params = sampler["sample_world_params"]
     h, w = vals.shape
-    south, west = sampler["bounds"][0]
-    north, east = sampler["bounds"][1]
-    dx = max(1e-12, (east - west))
-    dy = max(1e-12, (north - south))
 
     xy = np.array([(geom.x, geom.y) if geom is not None else (np.nan, np.nan) for geom in pts.geometry], dtype=np.float64)
     lon = xy[:, 0]
     lat = xy[:, 1]
-    inside = np.isfinite(lon) & np.isfinite(lat) & (lon >= west) & (lon <= east) & (lat >= south) & (lat <= north)
+    valid_xy = np.isfinite(lon) & np.isfinite(lat)
+    if not valid_xy.any():
+        out = pts.copy()
+        out[out_col] = np.nan
+        return out
+
+    if sample_crs == "EPSG:4326":
+        x_s = lon
+        y_s = lat
+    else:
+        transformer = Transformer.from_crs(4326, sample_crs, always_xy=True)
+        x_s, y_s = transformer.transform(lon, lat)
 
     out_vals = np.full(len(pts), np.nan, dtype=np.float64)
+    cols_f, rows_f = _world_to_pixel_np(x_s, y_s, *sample_world_params)
+    inside = (
+        valid_xy
+        & np.isfinite(cols_f)
+        & np.isfinite(rows_f)
+        & (cols_f >= -0.5)
+        & (cols_f <= (w - 0.5))
+        & (rows_f >= -0.5)
+        & (rows_f <= (h - 0.5))
+    )
     if inside.any():
-        cols = np.rint(((lon[inside] - west) / dx) * (w - 1)).astype(np.int64)
-        rows = np.rint(((north - lat[inside]) / dy) * (h - 1)).astype(np.int64)
+        cols = np.clip(np.rint(cols_f[inside]).astype(np.int64), 0, w - 1)
+        rows = np.clip(np.rint(rows_f[inside]).astype(np.int64), 0, h - 1)
         cols = np.clip(cols, 0, w - 1)
         rows = np.clip(rows, 0, h - 1)
         sampled = vals[rows, cols].astype(np.float64)
@@ -1043,6 +1143,10 @@ def _attach_leaflet_view_memory(m: folium.Map, storage_key: str = "energidalarna
             <style>
             .leaflet-container {
               overflow: hidden;
+            }
+            .leaflet-image-layer {
+              image-rendering: crisp-edges;
+              image-rendering: pixelated;
             }
             .leaflet-control-attribution {
               margin: 0 8px 8px 0;

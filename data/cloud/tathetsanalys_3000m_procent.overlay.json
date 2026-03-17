@@ -4,12 +4,12 @@
   "sample_image": "tathetsanalys_3000m_procent_values.png",
   "bounds_4326": [
     [
-      59.826772887132144,
-      12.086624522384183
+      59.82651210619412,
+      12.086423521613836
     ],
     [
-      62.28176519934809,
-      16.821616718471443
+      62.29375980005368,
+      16.822970393713558
     ]
   ],
   "opacity": 1.0,
@@ -21,14 +21,22 @@
   "raster_min": 1,
   "raster_max": 94,
   "source_crs": "EPSG:3006",
-  "source_tif": "data\\cloud\\tathetsanalys_3000m_procent_lan_clip.png",
-  "source_tfw": "data\\cloud\\tathetsanalys_3000m_procent_lan_clip.wld",
+  "sample_crs": "EPSG:3006",
+  "leaflet_image_crs": "EPSG:3857",
+  "source_tif": "data\\cloud\\tathetsanalys_3000m_procent_lan_clip.tif",
+  "source_tfw": "data\\cloud\\tathetsanalys_3000m_procent_lan_clip.tfw",
   "clip_admin_gpkg": "C:\\gislab\\energiplanering_dalarna\\data\\cloud\\admin_boundaries.gpkg",
   "clip_admin_layer": "lan",
   "crop_to_mask_bbox": false,
+  "source_window_px": [
+    0.0,
+    0.0,
+    1756.0,
+    1941.0
+  ],
   "original_size_px": [
-    1800,
-    1990
+    1756,
+    1941
   ],
   "output_size_px": [
     1628,
