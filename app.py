@@ -65,12 +65,10 @@ LAYER_LABELS = {
 THEME_LAYER_STYLES = {
     "rorligt_friluftsliv": "#0891b2",
     "utbyggnad_vindkraft": "#22c55e",
-    "nature_reserve": "#a21caf",
+    "nature_reserve": "#d946ef",
     "kulturmiljovard": "#f59e0b",
 }
-THEME_LAYER_SHAPES = {
-    "nature_reserve": "line",
-}
+THEME_LAYER_SHAPES = {}
 ADMIN_LAYER_STYLES = {
     "lan_boundary": ("Länsgräns", "#b91c1c"),
     "kommuner": ("Kommungräns", "#4b5563"),

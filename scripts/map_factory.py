@@ -629,7 +629,7 @@ def build_map(
         style_by_key = {
             "rorligt_friluftsliv": {"fillColor": "#0891b2", "fillOpacity": 0.2, "color": "#0e7490", "weight": 1.0, "opacity": 0.9},
             "utbyggnad_vindkraft": {"fillColor": "#22c55e", "fillOpacity": 0.2, "color": "#15803d", "weight": 1.0, "opacity": 0.9},
-            "nature_reserve": {"fillColor": "#a21caf", "fillOpacity": 0.0, "color": "#a21caf", "weight": 2.2, "opacity": 0.95, "dashArray": "8,6"},
+            "nature_reserve": {"fillColor": "#d946ef", "fillOpacity": 0.12, "color": "#a21caf", "weight": 1.4, "opacity": 0.9},
             "kulturmiljovard": {"fillColor": "#f59e0b", "fillOpacity": 0.2, "color": "#b45309", "weight": 1.0, "opacity": 0.9},
         }
         popup_fields_by_key = {
@@ -764,10 +764,10 @@ def build_map(
         def grp_style(feature: dict) -> dict:
             return {
                 "fillColor": feature["properties"].get("_grp_color", "#9ca3af"),
-                "fillOpacity": 0,
+                "fillOpacity": 0.12,
                 "color": "#1d4ed8",
-                "weight": 1.6,
-                "opacity": 0.95,
+                "weight": 1.2,
+                "opacity": 0.75,
             }
 
         folium.GeoJson(
