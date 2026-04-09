@@ -92,6 +92,17 @@ This writes:
 
 `app.py` will auto-prefer these bundles if present.
 
+#### Byt naturvårdsområden till Lantmäteriet Topografi 50
+Om du vill skriva om lagret `nature_reserve` i `data/cloud/lst_layers.gpkg` med Lantmäteriets Topografi 50
+(`naturvard_ln20.gpkg`, layer `skyddadnatur`), kör:
+
+```bash
+.\.venv\Scripts\python.exe scripts/13_update_nature_reserve_from_topografi50.py
+```
+
+Som standard letar scriptet efter `C:\gislab\data\dataraw\topologi50\naturvard_ln20.gpkg` och använder hela lagret `skyddadnatur` utan klippning.
+Lägg till `--clip-to-admin` om du senare vill klippa till länsgränsen.
+
 Optional: add a compact raster overlay layer (for example boreal density TIFF):
 
 ```bash
@@ -182,7 +193,7 @@ Förändringar att ta en och en:
 - `Rörligt friluftsliv.lst`
 - `Utbyggnad av vindkraft.lst`
 - `Kulturmiljövård.lst`
-- OSM-lager: byt `nature_reserve` till `Naturreservat.osm`
+- Naturvårdsområden: använd Lantmäteriet Topografi 50 (`naturvard_ln20`) som permanent källa
 2. Använda svenska tecken i UI (exempel):
 - `Tanda` -> `Tända`
 - `Analyslage` -> `Analysläge`

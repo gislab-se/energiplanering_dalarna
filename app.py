@@ -58,7 +58,7 @@ LAYER_LABELS = {
     "landskapskaraktar": "Landskapskaraktärsområden",
     "rorligt_friluftsliv": "Rörligt friluftsliv",
     "utbyggnad_vindkraft": "Utbyggnad av vindkraft",
-    "nature_reserve": "Naturreservat",
+    "nature_reserve": "Naturvårdsområden",
     "kulturmiljovard": "Kulturmiljövård",
     "boreal_density": "Skoglig värdekärna",
 }
@@ -313,7 +313,8 @@ def _cached_lan_boundary():
 
 
 @st.cache_data(show_spinner=False, ttl=300)
-def _cached_base_layers(repo_root_str: str):
+def _cached_base_layers(repo_root_str: str, cache_token: str):
+    _ = cache_token
     repo = Path(repo_root_str)
     lst_bundle = repo / "data" / "cloud" / LST_BUNDLE_GPKG
     return (
@@ -333,7 +334,8 @@ def _clip_to_dalarna(gdf: gpd.GeoDataFrame, dalarna: gpd.GeoDataFrame | None) ->
 
 
 @st.cache_data(show_spinner=False, ttl=300)
-def _cached_theme_layer(repo_root_str: str, key: str):
+def _cached_theme_layer(repo_root_str: str, key: str, cache_token: str):
+    _ = cache_token
     repo = Path(repo_root_str)
     lst_bundle = repo / "data" / "cloud" / LST_BUNDLE_GPKG
     if key not in LST_BUNDLE_LAYER_BY_KEY:
@@ -1500,7 +1502,6 @@ with st.sidebar:
     show_nature_reserve = st.checkbox(LAYER_LABELS["nature_reserve"], value=False)
     show_kulturmiljovard = st.checkbox(LAYER_LABELS["kulturmiljovard"], value=False)
     show_boreal_density = st.checkbox(LAYER_LABELS["boreal_density"], value=False)
-    st.caption("Källa: Länsstyrelsen, OpenStreetMap och Naturvårdsverket")
 
     st.subheader("Betydelsefulla platser")
     st.caption("Färg visar kommungrupp.")
@@ -1622,10 +1623,12 @@ elif area_kind == "all_kommuner":
 else:
     q_area = "samtliga kommungrupper"
 
+lst_bundle_cache_token = _file_cache_token(repo_root / "data" / "cloud" / LST_BUNDLE_GPKG)
+
 sty, kar = _empty_gdf(), _empty_gdf()
 sty_field, kar_field = "geometry", "geometry"
 if show_sty or show_kar:
-    sty, kar = _cached_base_layers(str(repo_root))
+    sty, kar = _cached_base_layers(str(repo_root), lst_bundle_cache_token)
     sty_field, kar_field = choose_default_field(sty), choose_default_field(kar)
 
 theme_layers: dict[str, gpd.GeoDataFrame] = {}
@@ -1636,7 +1639,7 @@ for key, on in [
     ("kulturmiljovard", show_kulturmiljovard),
 ]:
     if on:
-        theme_layers[key] = _cached_theme_layer(str(repo_root), key)
+        theme_layers[key] = _cached_theme_layer(str(repo_root), key, lst_bundle_cache_token)
 
 kommuner, kommungrupper, lan_boundary = None, None, None
 if show_kommuner or show_kommungrupper or analysis_enabled or area_kind in {"kommun", "kommungrupp", "all_kommuner", "all_kommungrupper"}:

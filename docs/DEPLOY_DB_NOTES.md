@@ -44,6 +44,6 @@ If network is blocked, app cannot load DB-backed layers even if secrets are set.
 ## Current fallback (Option 2)
 This repo now also supports a lightweight file bundle in `data/cloud/`:
 - `novus_locked_points.gpkg`
-- `nature_reserve_dalarna_light.gpkg`
+- `lst_layers.gpkg`
 
 That keeps deployment functional without DB, but with fewer layers.

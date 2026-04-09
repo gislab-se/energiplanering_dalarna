@@ -36,7 +36,7 @@ THEME_LAYER_SPECS = {
     "landskapskaraktar": ("Lstw.LstW_Landskapskaraktarsomraden", "Lstw.LstW_Landskapskaraktarsomraden"),
     "rorligt_friluftsliv": ("lst.LST_RI_Rorligt_friluftsliv_MB4kap2", "lst.LST_RI_Rorligt_friluftsliv_MB4kap2"),
     "utbyggnad_vindkraft": ("Lstw.LstW_Regional_analys_utbyggnad_vindkraft_juni2024", "Lstw.LstW_Regional_analys_utbyggnad_vindkraft_juni2024"),
-    "nature_reserve": ("qgis_osm", "naturereserve"),
+    "nature_reserve": ("topografi50", "skyddadnatur"),
     "kulturmiljovard": ("raa.RAA_RI_kulturmiljovard_MB3kap6", "raa.RAA_RI_kulturmiljovard_MB3kap6"),
 }
 
@@ -162,31 +162,17 @@ def load_theme_layer(repo_root: Path, key: str) -> gpd.GeoDataFrame:
     if key not in THEME_LAYER_SPECS:
         raise KeyError(f"Unknown theme layer key: {key}")
     if key == "nature_reserve":
-        path = repo_root / "data" / "qgis_osm" / "naturereserve.gpkg"
-        if not path.exists():
-            raise FileNotFoundError(f"Could not find expected layer: {path}")
-    else:
-        unpacked = repo_root / "data" / "raw" / "unpacked"
-        folder_name, stem = THEME_LAYER_SPECS[key]
-        path = _prefer_vector_path(unpacked / folder_name, stem)
-
-    # Persist en förenklad "light"-version av naturvärden för snabbare återladdning.
-    if key == "nature_reserve":
-        cache_dir = repo_root / "data" / "processed" / "light_layers"
-        cache_path = cache_dir / "nature_reserve_dalarna_light.gpkg"
-        if cache_path.exists():
-            return gpd.read_file(cache_path)
+        bundle = repo_root / "data" / "cloud" / "lst_layers.gpkg"
+        if bundle.exists():
+            return gpd.read_file(bundle, layer="nature_reserve")
+        raise FileNotFoundError(f"Could not find expected layer bundle: {bundle}")
+    unpacked = repo_root / "data" / "raw" / "unpacked"
+    folder_name, stem = THEME_LAYER_SPECS[key]
+    path = _prefer_vector_path(unpacked / folder_name, stem)
 
     dalarna = _load_dalarna_boundary(repo_root)
     gdf = gpd.read_file(path)
     out = _clip_and_simplify_to_dalarna(gdf, dalarna, key)
-
-    if key == "nature_reserve":
-        try:
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            out.to_file(cache_path, driver="GPKG")
-        except Exception:
-            pass
     return out
 
 
@@ -623,7 +609,7 @@ def build_map(
         label_by_key = {
             "rorligt_friluftsliv": "Rörligt friluftsliv",
             "utbyggnad_vindkraft": "Utbyggnad av vindkraft",
-            "nature_reserve": "Naturreservat",
+            "nature_reserve": "Naturvårdsområden",
             "kulturmiljovard": "Kulturmiljövård",
         }
         style_by_key = {
@@ -635,13 +621,13 @@ def build_map(
         popup_fields_by_key = {
             "rorligt_friluftsliv": ["namn"],
             "utbyggnad_vindkraft": ["Bebyggelse"],
-            "nature_reserve": ["name"],
+            "nature_reserve": ["name", "objekttyp", "djurskyddstyp"],
             "kulturmiljovard": ["NAMN", "BESKRIVNIN"],
         }
         popup_alias_by_key = {
             "rorligt_friluftsliv": ["Namn"],
             "utbyggnad_vindkraft": ["Bebyggelse"],
-            "nature_reserve": ["Namn"],
+            "nature_reserve": ["Namn/ID", "Typ", "Djurskydd"],
             "kulturmiljovard": ["Namn", "Beskrivning"],
         }
 
@@ -654,8 +640,10 @@ def build_map(
                 continue
 
             requested_fields = popup_fields_by_key.get(key, [])
-            fields = [f for f in requested_fields if f in gdf.columns]
-            aliases = popup_alias_by_key.get(key, ["Info"] * max(1, len(fields)))
+            requested_aliases = popup_alias_by_key.get(key, ["Info"] * len(requested_fields))
+            selected = [(f, a) for f, a in zip(requested_fields, requested_aliases) if f in gdf.columns]
+            fields = [f for f, _ in selected]
+            aliases = [a for _, a in selected]
             if not fields:
                 field = choose_default_field(gdf)
                 fields = [field]
