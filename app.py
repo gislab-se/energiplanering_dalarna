@@ -17,7 +17,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image
 from pyproj import Transformer
-from streamlit_folium import folium_static
+from streamlit_folium import folium_static, st_folium
 from shapely.geometry import Point
 
 _mf_path = Path(__file__).resolve().parent / "scripts" / "map_factory.py"
@@ -1211,7 +1211,7 @@ def _add_lst_zone_overlay(m: folium.Map, zone: gpd.GeoDataFrame | None) -> None:
     ).add_to(m)
 
 
-def _attach_leaflet_view_memory(m: folium.Map, storage_key: str = "energidalarna_map_view_v1") -> None:
+def _attach_leaflet_render_styles(m: folium.Map) -> None:
     m.get_root().header.add_child(
         folium.Element(
             """
@@ -1230,33 +1230,67 @@ def _attach_leaflet_view_memory(m: folium.Map, storage_key: str = "energidalarna
             """
         )
     )
-    script = f"""
-    <script>
-    (function() {{
-      var map = {m.get_name()};
-      var storageKey = {json.dumps(storage_key)};
-      try {{
-        var saved = window.sessionStorage.getItem(storageKey);
-        if (saved) {{
-          var state = JSON.parse(saved);
-          if (state && Array.isArray(state.center) && state.center.length === 2 && typeof state.zoom === "number") {{
-            map.setView(state.center, state.zoom, {{animate: false}});
-          }}
-        }}
-      }} catch (error) {{}}
-      map.on("moveend", function() {{
-        try {{
-          var center = map.getCenter();
-          window.sessionStorage.setItem(
-            storageKey,
-            JSON.stringify({{center: [center.lat, center.lng], zoom: map.getZoom()}})
-          );
-        }} catch (error) {{}}
-      }});
-    }})();
-    </script>
-    """
-    m.get_root().script.add_child(folium.Element(script))
+
+
+MAP_VIEW_CENTER_KEY = "energidalarna_map_view_center"
+MAP_VIEW_ZOOM_KEY = "energidalarna_map_view_zoom"
+MAP_COMPONENT_KEY = "energidalarna_main_map"
+
+
+def _coerce_map_center(value: object) -> tuple[float, float] | None:
+    try:
+        if isinstance(value, dict):
+            lat = float(value.get("lat"))
+            lng = float(value.get("lng"))
+        elif isinstance(value, (list, tuple)) and len(value) == 2:
+            lat = float(value[0])
+            lng = float(value[1])
+        else:
+            return None
+        if -90 <= lat <= 90 and -180 <= lng <= 180:
+            return (lat, lng)
+    except Exception:
+        return None
+    return None
+
+
+def _coerce_map_zoom(value: object) -> int | None:
+    try:
+        zoom = int(round(float(value)))
+    except Exception:
+        return None
+    if 0 <= zoom <= 22:
+        return zoom
+    return None
+
+
+def _current_saved_map_view(enabled: bool) -> tuple[tuple[float, float] | None, int | None]:
+    if not enabled:
+        return None, None
+    center = _coerce_map_center(st.session_state.get(MAP_VIEW_CENTER_KEY))
+    zoom = _coerce_map_zoom(st.session_state.get(MAP_VIEW_ZOOM_KEY))
+    return center, zoom
+
+
+def _store_map_view(map_state: dict | None, enabled: bool) -> None:
+    if not enabled or not isinstance(map_state, dict):
+        return
+    center = _coerce_map_center(map_state.get("center"))
+    zoom = _coerce_map_zoom(map_state.get("zoom"))
+    if center is not None:
+        st.session_state[MAP_VIEW_CENTER_KEY] = center
+    if zoom is not None:
+        st.session_state[MAP_VIEW_ZOOM_KEY] = zoom
+
+
+def _sync_map_view_from_component() -> None:
+    _store_map_view(st.session_state.get(MAP_COMPONENT_KEY), True)
+
+
+def _reset_saved_map_view() -> None:
+    st.session_state.pop(MAP_VIEW_CENTER_KEY, None)
+    st.session_state.pop(MAP_VIEW_ZOOM_KEY, None)
+    st.session_state.pop(MAP_COMPONENT_KEY, None)
 
 
 def _normalize_landscape_label(value: object) -> str:
@@ -1538,6 +1572,14 @@ with st.sidebar:
             "Hemvist (QI): För kommun och kommungrupp visas punkter från respondenter som bor i valt arbetsområde (resp_kom). "
             "Punkterna kan ligga var som helst i länet."
         )
+
+    preserve_map_view = st.checkbox("Behåll zoom och position vid ändringar", value=True)
+    reset_map_view = st.button("Återställ kartvy", disabled=not preserve_map_view)
+    if reset_map_view:
+        _reset_saved_map_view()
+    saved_center, saved_zoom = _current_saved_map_view(preserve_map_view)
+    if preserve_map_view and saved_center is not None and saved_zoom is not None:
+        st.caption(f"Sparad kartvy: zoom {saved_zoom}")
 
     st.subheader("Bakgrund")
     show_lan_boundary = st.checkbox("Visa länsgräns", value=False)
@@ -1896,6 +1938,7 @@ if show_boreal_density:
         st.sidebar.warning(f"Kunde inte lasa rasteroverlay: {exc}")
 
 kommuner_for_map = _internal_kommun_boundary_layer(kommuner) if show_kommuner else kommuner
+initial_map_center, initial_map_zoom = _current_saved_map_view(preserve_map_view)
 
 m = _build_map_compat(
     sty=sty,
@@ -1931,6 +1974,8 @@ m = _build_map_compat(
     satellite_base=satellite_base,
     extra_image_overlays=extra_image_overlays,
     show_map_legend=False,
+    initial_center=initial_map_center,
+    initial_zoom=initial_map_zoom,
 )
 
 selected_lst_layer = None
@@ -2014,11 +2059,26 @@ if analysis_enabled:
         else:
             st.caption("Ingen träff i punktanalysen med nuvarande val.")
 
-_attach_leaflet_view_memory(m)
+_attach_leaflet_render_styles(m)
 
 with main_col:
     try:
-        folium_static(m, width=None, height=920)
+        if preserve_map_view:
+            map_state = st_folium(
+                m,
+                key=MAP_COMPONENT_KEY,
+                height=920,
+                width=None,
+                returned_objects=["center", "zoom"],
+                center=initial_map_center,
+                zoom=initial_map_zoom,
+                use_container_width=True,
+                pixelated=True,
+                on_change=_sync_map_view_from_component,
+            )
+            _store_map_view(map_state, preserve_map_view)
+        else:
+            folium_static(m, width=None, height=920)
     except Exception:
         components.html(m.get_root().render(), height=920, scrolling=False)
     _render_active_legends(
