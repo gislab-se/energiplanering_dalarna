@@ -767,6 +767,60 @@ def _fallback_center_layer() -> gpd.GeoDataFrame:
     return gpd.GeoDataFrame({"name": ["Dalarna"]}, geometry=[Point(15.0, 61.0)], crs=4326)
 
 
+def _geometry_union(geoms: gpd.GeoSeries):
+    if hasattr(geoms, "union_all"):
+        return geoms.union_all()
+    return geoms.unary_union
+
+
+def _internal_kommun_boundary_layer(kommuner: gpd.GeoDataFrame | None) -> gpd.GeoDataFrame | None:
+    if kommuner is None or len(kommuner) == 0:
+        return kommuner
+
+    try:
+        source = kommuner.copy()
+        if source.crs is None:
+            source = source.set_crs(4326)
+        source = source.to_crs(3006)
+
+        polygonal = source[source.geometry.geom_type.astype(str).isin(["Polygon", "MultiPolygon"])].copy()
+        if len(polygonal) == 0:
+            return kommuner
+
+        try:
+            fixed_geometry = polygonal.geometry.make_valid()
+        except Exception:
+            fixed_geometry = polygonal.geometry.buffer(0)
+
+        fixed = gpd.GeoSeries(fixed_geometry, crs=source.crs)
+        fixed = fixed[fixed.notna() & (~fixed.is_empty)]
+        if len(fixed) == 0:
+            return kommuner
+
+        all_boundaries = _geometry_union(fixed.boundary)
+        dissolved = _geometry_union(fixed)
+        if all_boundaries is None or dissolved is None:
+            return kommuner
+
+        outer_boundary = dissolved.boundary
+        internal = all_boundaries.difference(outer_boundary)
+        if internal is None or getattr(internal, "is_empty", True):
+            internal = all_boundaries.difference(outer_boundary.buffer(2.0))
+        if internal is None or getattr(internal, "is_empty", True):
+            return kommuner
+
+        return gpd.GeoDataFrame(
+            {
+                "kommunnamn": [ADMIN_LAYER_STYLES["kommuner"][0]],
+                "kommunkod": [""],
+            },
+            geometry=[internal],
+            crs=source.crs,
+        ).to_crs(4326)
+    except Exception:
+        return kommuner
+
+
 def _build_map_compat(**kwargs):
     sig = inspect.signature(build_map)
     accepted = {k: v for k, v in kwargs.items() if k in sig.parameters}
@@ -1502,6 +1556,8 @@ with st.sidebar:
     show_nature_reserve = st.checkbox(LAYER_LABELS["nature_reserve"], value=False)
     show_kulturmiljovard = st.checkbox(LAYER_LABELS["kulturmiljovard"], value=False)
     show_boreal_density = st.checkbox(LAYER_LABELS["boreal_density"], value=False)
+    kartlager_opacity_pct = st.slider("Opacitet kartlager (%)", 5, 80, 35, 5)
+    kartlager_opacity = kartlager_opacity_pct / 100.0
 
     st.subheader("Betydelsefulla platser")
     st.caption("Färg visar kommungrupp.")
@@ -1834,9 +1890,12 @@ if show_boreal_density:
         else:
             boreal_overlay = dict(boreal_overlay)
             boreal_overlay["name"] = LAYER_LABELS["boreal_density"]
+            boreal_overlay["opacity"] = kartlager_opacity
             extra_image_overlays.append(boreal_overlay)
     except Exception as exc:
         st.sidebar.warning(f"Kunde inte lasa rasteroverlay: {exc}")
+
+kommuner_for_map = _internal_kommun_boundary_layer(kommuner) if show_kommuner else kommuner
 
 m = _build_map_compat(
     sty=sty,
@@ -1849,7 +1908,7 @@ m = _build_map_compat(
     show_lan_boundary=show_lan_boundary,
     theme_layers=theme_layers,
     theme_visibility={k: True for k in theme_layers.keys()},
-    kommuner=kommuner,
+    kommuner=kommuner_for_map,
     kommungrupper=kommungrupper,
     show_kommuner=show_kommuner,
     show_kommungrupper=show_kommungrupper,
@@ -1863,6 +1922,8 @@ m = _build_map_compat(
     show_non_sensitive_points=show_non_sensitive_points,
     sensitive_buffer_m=point_buffer_m,
     sty_opacity=0.6,
+    layer_opacity=kartlager_opacity,
+    point_radius=3.5,
     show_landscape_colored_points=False,
     show_landscape_aggregated_points=False,
     wind_turbines=wind_turbines,

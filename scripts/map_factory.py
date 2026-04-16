@@ -430,6 +430,18 @@ def _group_color(value: object) -> str:
         return "#9ca3af"
 
 
+def _fill_only_style(fill_color: str, fill_opacity: float) -> dict[str, object]:
+    fill_opacity = max(0.0, min(1.0, float(fill_opacity)))
+    return {
+        "fillColor": fill_color,
+        "fillOpacity": fill_opacity,
+        "stroke": False,
+        "color": "transparent",
+        "weight": 0,
+        "opacity": 0,
+    }
+
+
 def _combine_point_layers_for_landscape(
     plats1_points: gpd.GeoDataFrame | None,
     plats2_points: gpd.GeoDataFrame | None,
@@ -508,6 +520,8 @@ def build_map(
     show_non_sensitive_points: bool = False,
     sensitive_buffer_m: int = 0,
     sty_opacity: float = 0.6,
+    layer_opacity: float | None = None,
+    point_radius: float = 3.5,
     show_landscape_colored_points: bool = False,
     show_landscape_aggregated_points: bool = False,
     wind_turbines: gpd.GeoDataFrame | None = None,
@@ -518,6 +532,11 @@ def build_map(
     initial_center: list[float] | tuple[float, float] | None = None,
     initial_zoom: int | None = None,
 ) -> folium.Map:
+    if layer_opacity is not None:
+        layer_opacity = max(0.0, min(1.0, float(layer_opacity)))
+    point_radius = max(1.0, float(point_radius))
+    small_point_radius = max(1.0, min(2.5, point_radius - 1.0))
+
     sty_vals = sty[sty_field].fillna("(saknas)").astype(str).map(_normalize_landscape_type)
     kar_vals = kar[kar_field].fillna("(saknas)").astype(str)
     sty = sty.assign(_sty_val=sty_vals, _sty_popup=sty_vals)
@@ -552,7 +571,10 @@ def build_map(
 
     def sty_style(feature: dict) -> dict:
         val = str(feature["properties"].get("_sty_val", "(saknas)"))
-        return {"fillColor": colors.get(val, "#cccccc"), "color": "#444444", "weight": 1.4, "fillOpacity": float(sty_opacity), "opacity": 1}
+        return _fill_only_style(
+            colors.get(val, "#cccccc"),
+            layer_opacity if layer_opacity is not None else float(sty_opacity),
+        )
 
     if show_sty:
         folium.GeoJson(sty, name="Landskapstyper", style_function=sty_style, popup=folium.GeoJsonPopup(fields=["_sty_popup"], labels=False)).add_to(m)
@@ -562,13 +584,10 @@ def build_map(
 
         def kar_style(feature: dict) -> dict:
             val = str(feature["properties"].get("_kar_val", "(saknas)"))
-            return {
-                "fillColor": kar_colors.get(val, "#94a3b8"),
-                "fillOpacity": 0.2,
-                "color": "#334155",
-                "weight": 0.9,
-                "opacity": 0.7,
-            }
+            return _fill_only_style(
+                kar_colors.get(val, "#94a3b8"),
+                layer_opacity if layer_opacity is not None else 0.2,
+            )
 
         folium.GeoJson(
             kar,
@@ -613,10 +632,10 @@ def build_map(
             "kulturmiljovard": "Kulturmiljövård",
         }
         style_by_key = {
-            "rorligt_friluftsliv": {"fillColor": "#0891b2", "fillOpacity": 0.2, "color": "#0e7490", "weight": 1.0, "opacity": 0.9},
-            "utbyggnad_vindkraft": {"fillColor": "#22c55e", "fillOpacity": 0.2, "color": "#15803d", "weight": 1.0, "opacity": 0.9},
-            "nature_reserve": {"fillColor": "#d946ef", "fillOpacity": 0.12, "color": "#a21caf", "weight": 1.4, "opacity": 0.9},
-            "kulturmiljovard": {"fillColor": "#f59e0b", "fillOpacity": 0.2, "color": "#b45309", "weight": 1.0, "opacity": 0.9},
+            "rorligt_friluftsliv": _fill_only_style("#0891b2", layer_opacity if layer_opacity is not None else 0.2),
+            "utbyggnad_vindkraft": _fill_only_style("#22c55e", layer_opacity if layer_opacity is not None else 0.2),
+            "nature_reserve": _fill_only_style("#d946ef", layer_opacity if layer_opacity is not None else 0.12),
+            "kulturmiljovard": _fill_only_style("#f59e0b", layer_opacity if layer_opacity is not None else 0.2),
         }
         popup_fields_by_key = {
             "rorligt_friluftsliv": ["namn"],
@@ -651,7 +670,7 @@ def build_map(
 
             style_cfg = style_by_key.get(
                 key,
-                {"fillColor": "#64748b", "fillOpacity": 0.16, "color": "#334155", "weight": 1.0, "opacity": 0.9},
+                _fill_only_style("#64748b", layer_opacity if layer_opacity is not None else 0.16),
             )
             smooth_factor = 2.0 if key in {"nature_reserve", "rorligt_friluftsliv", "kulturmiljovard"} else None
             folium.GeoJson(
@@ -752,10 +771,10 @@ def build_map(
         def grp_style(feature: dict) -> dict:
             return {
                 "fillColor": feature["properties"].get("_grp_color", "#9ca3af"),
-                "fillOpacity": 0.12,
+                "fillOpacity": 0.06,
                 "color": "#1d4ed8",
-                "weight": 1.2,
-                "opacity": 0.75,
+                "weight": 1.0,
+                "opacity": 0.45,
             }
 
         folium.GeoJson(
@@ -820,7 +839,7 @@ def build_map(
         folium.GeoJson(
             p1,
             name="Vald plats 1",
-            marker=folium.CircleMarker(radius=5, weight=0, color="transparent", fill=True, fill_opacity=0.8),
+            marker=folium.CircleMarker(radius=point_radius, weight=0, color="transparent", fill=True, fill_opacity=0.8),
             style_function=lambda f: {
                 "fillColor": f["properties"].get("_grp_color", "#9ca3af"),
                 "color": "transparent",
@@ -837,7 +856,7 @@ def build_map(
         folium.GeoJson(
             p2,
             name="Vald plats 2",
-            marker=folium.CircleMarker(radius=5, weight=0, color="transparent", fill=True, fill_opacity=0.8),
+            marker=folium.CircleMarker(radius=point_radius, weight=0, color="transparent", fill=True, fill_opacity=0.8),
             style_function=lambda f: {
                 "fillColor": f["properties"].get("_grp_color", "#9ca3af"),
                 "color": "transparent",
@@ -854,7 +873,7 @@ def build_map(
         folium.GeoJson(
             sp,
             name="Valda platser som är extra känsliga för ny infrastruktur",
-            marker=folium.CircleMarker(radius=5, weight=0, color="transparent", fill=True, fill_opacity=0.9),
+            marker=folium.CircleMarker(radius=point_radius, weight=0, color="transparent", fill=True, fill_opacity=0.9),
             style_function=lambda f: {
                 "fillColor": f["properties"].get("_grp_color", "#9ca3af"),
                 "color": "transparent",
@@ -871,7 +890,7 @@ def build_map(
         folium.GeoJson(
             nsp,
             name="Valda platser som INTE är känsliga för ny infrastruktur",
-            marker=folium.CircleMarker(radius=5, weight=0, color="transparent", fill=True, fill_opacity=0.9),
+            marker=folium.CircleMarker(radius=point_radius, weight=0, color="transparent", fill=True, fill_opacity=0.9),
             style_function=lambda f: {
                 "fillColor": f["properties"].get("_grp_color", "#9ca3af"),
                 "color": "transparent",
@@ -909,7 +928,7 @@ def build_map(
             folium.GeoJson(
                 classified,
                 name="Punkter fargade efter landskapstyp",
-                marker=folium.CircleMarker(radius=3, weight=1, color="#1f2937", fill=True, fill_opacity=0.8),
+                marker=folium.CircleMarker(radius=small_point_radius, weight=1, color="#1f2937", fill=True, fill_opacity=0.8),
                 style_function=lambda f: {
                     "fillColor": colors.get(f["properties"].get("_sty_val", "(saknas)"), "#9ca3af"),
                     "color": "#1f2937",
@@ -960,7 +979,7 @@ def build_map(
         folium.GeoJson(
             wind_turbines,
             name="Vindkraftverk (Dalarna + 30 km)",
-            marker=folium.CircleMarker(radius=3, weight=1, color="#14532d", fill=True, fill_opacity=0.9),
+            marker=folium.CircleMarker(radius=small_point_radius, weight=1, color="#14532d", fill=True, fill_opacity=0.9),
             style_function=lambda _: {
                 "fillColor": "#22c55e",
                 "color": "#14532d",
