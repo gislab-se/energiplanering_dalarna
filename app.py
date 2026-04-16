@@ -14,10 +14,9 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 from PIL import Image
 from pyproj import Transformer
-from streamlit_folium import folium_static, st_folium
+from streamlit_folium import st_folium
 from shapely.geometry import Point
 
 _mf_path = Path(__file__).resolve().parent / "scripts" / "map_factory.py"
@@ -1232,65 +1231,76 @@ def _attach_leaflet_render_styles(m: folium.Map) -> None:
     )
 
 
-MAP_VIEW_CENTER_KEY = "energidalarna_map_view_center"
-MAP_VIEW_ZOOM_KEY = "energidalarna_map_view_zoom"
 MAP_COMPONENT_KEY = "energidalarna_main_map"
-
-
-def _coerce_map_center(value: object) -> tuple[float, float] | None:
-    try:
-        if isinstance(value, dict):
-            lat = float(value.get("lat"))
-            lng = float(value.get("lng"))
-        elif isinstance(value, (list, tuple)) and len(value) == 2:
-            lat = float(value[0])
-            lng = float(value[1])
-        else:
-            return None
-        if -90 <= lat <= 90 and -180 <= lng <= 180:
-            return (lat, lng)
-    except Exception:
-        return None
-    return None
-
-
-def _coerce_map_zoom(value: object) -> int | None:
-    try:
-        zoom = int(round(float(value)))
-    except Exception:
-        return None
-    if 0 <= zoom <= 22:
-        return zoom
-    return None
-
-
-def _current_saved_map_view(enabled: bool) -> tuple[tuple[float, float] | None, int | None]:
-    if not enabled:
-        return None, None
-    center = _coerce_map_center(st.session_state.get(MAP_VIEW_CENTER_KEY))
-    zoom = _coerce_map_zoom(st.session_state.get(MAP_VIEW_ZOOM_KEY))
-    return center, zoom
-
-
-def _store_map_view(map_state: dict | None, enabled: bool) -> None:
-    if not enabled or not isinstance(map_state, dict):
-        return
-    center = _coerce_map_center(map_state.get("center"))
-    zoom = _coerce_map_zoom(map_state.get("zoom"))
-    if center is not None:
-        st.session_state[MAP_VIEW_CENTER_KEY] = center
-    if zoom is not None:
-        st.session_state[MAP_VIEW_ZOOM_KEY] = zoom
-
-
-def _sync_map_view_from_component() -> None:
-    _store_map_view(st.session_state.get(MAP_COMPONENT_KEY), True)
+MAP_VIEW_RESET_TOKEN_KEY = "energidalarna_map_view_reset_token"
 
 
 def _reset_saved_map_view() -> None:
-    st.session_state.pop(MAP_VIEW_CENTER_KEY, None)
-    st.session_state.pop(MAP_VIEW_ZOOM_KEY, None)
     st.session_state.pop(MAP_COMPONENT_KEY, None)
+
+
+def _map_view_reset_token() -> int:
+    try:
+        return int(st.session_state.get(MAP_VIEW_RESET_TOKEN_KEY, 0))
+    except Exception:
+        return 0
+
+
+def _request_browser_map_view_reset() -> None:
+    st.session_state[MAP_VIEW_RESET_TOKEN_KEY] = _map_view_reset_token() + 1
+
+
+def _stable_streamlit_map_shell(
+    source_map: folium.Map,
+    satellite_base: bool,
+) -> folium.Map:
+    base = folium.Map(
+        location=list(getattr(source_map, "location", [61.0, 14.5])),
+        zoom_start=int(getattr(source_map, "options", {}).get("zoom", 8)),
+        tiles=None,
+    )
+    folium.TileLayer(
+        tiles="CartoDB positron",
+        name="Bakgrund: Ljus karta",
+        overlay=False,
+        control=True,
+        show=not satellite_base,
+    ).add_to(base)
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr="Tiles (c) Esri, Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+        name="Bakgrund: Satellit",
+        overlay=False,
+        control=True,
+        show=satellite_base,
+        max_zoom=19,
+    ).add_to(base)
+    _attach_leaflet_render_styles(base)
+    return base
+
+
+def _dynamic_feature_groups(source_map: folium.Map) -> list[folium.FeatureGroup]:
+    groups: list[folium.FeatureGroup] = []
+    skip_types = (
+        folium.raster_layers.TileLayer,
+        folium.map.LayerControl,
+    )
+    for idx, child in enumerate(list(source_map._children.values())):
+        if isinstance(child, skip_types):
+            continue
+        if isinstance(child, folium.FeatureGroup):
+            groups.append(child)
+            continue
+        layer_name = getattr(child, "layer_name", None) or getattr(child, "_name", None)
+        group = folium.FeatureGroup(
+            name=str(layer_name or f"Kartlager {idx + 1}"),
+            overlay=True,
+            control=bool(getattr(child, "control", True)),
+            show=bool(getattr(child, "show", True)),
+        )
+        group.add_child(child)
+        groups.append(group)
+    return groups
 
 
 def _normalize_landscape_label(value: object) -> str:
@@ -1577,9 +1587,9 @@ with st.sidebar:
     reset_map_view = st.button("Återställ kartvy", disabled=not preserve_map_view)
     if reset_map_view:
         _reset_saved_map_view()
-    saved_center, saved_zoom = _current_saved_map_view(preserve_map_view)
-    if preserve_map_view and saved_center is not None and saved_zoom is not None:
-        st.caption(f"Sparad kartvy: zoom {saved_zoom}")
+        _request_browser_map_view_reset()
+    if preserve_map_view:
+        st.caption("Kartvyn behålls vid lagerbyte utan omladdning vid pan/zoom.")
 
     st.subheader("Bakgrund")
     show_lan_boundary = st.checkbox("Visa länsgräns", value=False)
@@ -1938,7 +1948,6 @@ if show_boreal_density:
         st.sidebar.warning(f"Kunde inte lasa rasteroverlay: {exc}")
 
 kommuner_for_map = _internal_kommun_boundary_layer(kommuner) if show_kommuner else kommuner
-initial_map_center, initial_map_zoom = _current_saved_map_view(preserve_map_view)
 
 m = _build_map_compat(
     sty=sty,
@@ -1974,8 +1983,8 @@ m = _build_map_compat(
     satellite_base=satellite_base,
     extra_image_overlays=extra_image_overlays,
     show_map_legend=False,
-    initial_center=initial_map_center,
-    initial_zoom=initial_map_zoom,
+    initial_center=None,
+    initial_zoom=None,
 )
 
 selected_lst_layer = None
@@ -2060,27 +2069,21 @@ if analysis_enabled:
             st.caption("Ingen träff i punktanalysen med nuvarande val.")
 
 _attach_leaflet_render_styles(m)
+map_shell = _stable_streamlit_map_shell(m, satellite_base)
+dynamic_feature_groups = _dynamic_feature_groups(m)
 
 with main_col:
-    try:
-        if preserve_map_view:
-            map_state = st_folium(
-                m,
-                key=MAP_COMPONENT_KEY,
-                height=920,
-                width=None,
-                returned_objects=["center", "zoom"],
-                center=initial_map_center,
-                zoom=initial_map_zoom,
-                use_container_width=True,
-                pixelated=True,
-                on_change=_sync_map_view_from_component,
-            )
-            _store_map_view(map_state, preserve_map_view)
-        else:
-            folium_static(m, width=None, height=920)
-    except Exception:
-        components.html(m.get_root().render(), height=920, scrolling=False)
+    st_folium(
+        map_shell,
+        key=f"{MAP_COMPONENT_KEY}_{_map_view_reset_token() if preserve_map_view else 'free'}",
+        height=920,
+        width=None,
+        returned_objects=[],
+        feature_group_to_add=dynamic_feature_groups,
+        layer_control=folium.LayerControl(collapsed=False),
+        use_container_width=True,
+        pixelated=True,
+    )
     _render_active_legends(
         show_lan_boundary=show_lan_boundary,
         show_kommuner=show_kommuner,
