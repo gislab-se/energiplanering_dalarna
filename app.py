@@ -1232,22 +1232,7 @@ def _attach_leaflet_render_styles(m: folium.Map) -> None:
 
 
 MAP_COMPONENT_KEY = "energidalarna_main_map"
-MAP_VIEW_RESET_TOKEN_KEY = "energidalarna_map_view_reset_token"
-
-
-def _reset_saved_map_view() -> None:
-    st.session_state.pop(MAP_COMPONENT_KEY, None)
-
-
-def _map_view_reset_token() -> int:
-    try:
-        return int(st.session_state.get(MAP_VIEW_RESET_TOKEN_KEY, 0))
-    except Exception:
-        return 0
-
-
-def _request_browser_map_view_reset() -> None:
-    st.session_state[MAP_VIEW_RESET_TOKEN_KEY] = _map_view_reset_token() + 1
+RIGHT_PANEL_OPEN_KEY = "right_panel_open"
 
 
 def _stable_streamlit_map_shell(
@@ -1583,14 +1568,6 @@ with st.sidebar:
             "Punkterna kan ligga var som helst i länet."
         )
 
-    preserve_map_view = st.checkbox("Behåll zoom och position vid ändringar", value=True)
-    reset_map_view = st.button("Återställ kartvy", disabled=not preserve_map_view)
-    if reset_map_view:
-        _reset_saved_map_view()
-        _request_browser_map_view_reset()
-    if preserve_map_view:
-        st.caption("Kartvyn behålls vid lagerbyte utan omladdning vid pan/zoom.")
-
     st.subheader("Bakgrund")
     show_lan_boundary = st.checkbox("Visa länsgräns", value=False)
     show_kommungrupper = st.checkbox("Visa kommungrupper", value=False)
@@ -1631,37 +1608,213 @@ try:
 except Exception:
     pass
 
-main_col, right_col = st.columns([4.8, 1.2], gap="medium")
-with right_col:
-    st.subheader("Punktbuffert")
-    point_buffer_m = st.slider("Buffert runt tända punktlager (meter)", 0, 3000, 0, 100, key="point_buffer_right")
-    st.subheader("Punktanalys")
-    analysis_enabled = st.checkbox("Visa antal punkter i valt kartlager", value=False)
-    analysis_metric = "Punkter"
-    analysis_near_m = 0
-    if analysis_enabled:
-        analysis_metric = st.selectbox("Mått", ["Punkter", "Unika respondenter"], index=0)
-        analysis_near_m = st.slider("Närhetszon runt valt kartlager (meter)", 0, 3000, 0, 50)
-    else:
-        st.caption("Aktivera analysen för att välja mått och närhetszon.")
+def _session_int(key: str, default: int, min_value: int, max_value: int) -> int:
+    try:
+        value = int(st.session_state.get(key, default))
+    except Exception:
+        value = default
+    return max(min_value, min(max_value, value))
 
-    st.subheader(LAYER_LABELS["boreal_density"])
+
+def _session_range(key: str, default: tuple[int, int], min_value: int, max_value: int) -> tuple[int, int]:
+    raw = st.session_state.get(key, default)
+    try:
+        lo, hi = int(raw[0]), int(raw[1])
+    except Exception:
+        lo, hi = default
+    lo = max(min_value, min(max_value, lo))
+    hi = max(min_value, min(max_value, hi))
+    if lo > hi:
+        lo, hi = hi, lo
+    return lo, hi
+
+
+if RIGHT_PANEL_OPEN_KEY not in st.session_state:
+    st.session_state[RIGHT_PANEL_OPEN_KEY] = True
+
+show_right_panel = bool(st.session_state.get(RIGHT_PANEL_OPEN_KEY, True))
+
+if show_right_panel:
+    main_col, right_toggle_col, right_col = st.columns([4.75, 0.08, 1.2], gap="small")
+else:
+    main_col, right_toggle_col = st.columns([5.95, 0.08], gap="small")
+    right_col = None
+
+right_panel_width_css = "min(22rem, 34vw)"
+right_toggle_right_css = f"calc({right_panel_width_css} + 0.45rem)" if show_right_panel else "0.65rem"
+right_panel_drawer_css = ""
+if show_right_panel:
+    right_panel_drawer_css = f"""
+        div[data-testid="column"]:has(#right-panel-content-anchor) {{
+          position: fixed !important;
+          top: 0;
+          right: 0;
+          bottom: 0;
+          width: {right_panel_width_css} !important;
+          min-width: {right_panel_width_css} !important;
+          max-width: {right_panel_width_css} !important;
+          flex: 0 0 {right_panel_width_css} !important;
+          z-index: 999;
+          overflow-y: auto;
+          overflow-x: hidden;
+          background: rgb(240, 242, 246);
+          border-left: 1px solid rgba(49, 51, 63, 0.16);
+          padding: 3.35rem 1.15rem 2rem 1.15rem !important;
+        }}
+        div[data-testid="column"]:has(#right-panel-content-anchor) #right-panel-content-anchor {{
+          display: none;
+        }}
+        div[data-testid="stAppViewContainer"] section.main .block-container,
+        div[data-testid="stAppViewContainer"] .main .block-container {{
+          padding-right: calc({right_panel_width_css} + 1.25rem);
+        }}
+        """
+
+with right_toggle_col:
+    right_toggle_css = """
+        <span id="right-panel-toggle-anchor"></span>
+        <style>
+        div[data-testid="column"]:has(#right-panel-toggle-anchor) {
+          min-width: 1.75rem !important;
+          width: 1.75rem !important;
+          max-width: 1.75rem !important;
+          flex: 0 0 1.75rem !important;
+          padding-left: 0 !important;
+          padding-right: 0 !important;
+        }
+        div[data-testid="column"]:has(#right-panel-toggle-anchor) div[data-testid="stButton"] {
+          position: fixed;
+          top: 0.65rem;
+          right: __RIGHT_TOGGLE_RIGHT__;
+          z-index: 1001;
+          width: 1.75rem;
+          margin: 0 !important;
+          padding: 0 !important;
+        }
+        div[data-testid="column"]:has(#right-panel-toggle-anchor) div[data-testid="stButton"] button {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 1.75rem;
+          min-width: 1.75rem;
+          height: 1.75rem;
+          min-height: 1.75rem;
+          padding: 0;
+          border: 0;
+          border-radius: 0.25rem;
+          background: transparent;
+          box-shadow: none;
+          color: rgba(49, 51, 63, 0.55);
+          font-size: 1rem;
+          font-weight: 600;
+          line-height: 1;
+        }
+        div[data-testid="column"]:has(#right-panel-toggle-anchor) div[data-testid="stButton"] button:hover {
+          background: rgba(49, 51, 63, 0.08);
+          color: rgba(49, 51, 63, 0.8);
+        }
+        div[data-testid="column"]:has(#right-panel-toggle-anchor) div[data-testid="stButton"] button:focus {
+          outline: none;
+          box-shadow: none;
+        }
+        div[data-testid="column"]:has(#right-panel-toggle-anchor) div[data-testid="stButton"] p {
+          margin: 0;
+          line-height: 1;
+        }
+        __RIGHT_PANEL_DRAWER_CSS__
+        </style>
+        """
     st.markdown(
-        "[Vill du veta mer om skogliga värdekärnor? Klicka här](https://geodata.naturvardsverket.se/nedladdning/Skog/Slutrapport_Landskapsanalys_av_skogliga_vardekarnor_i_boreal_region.pdf)"
+        right_toggle_css.replace("__RIGHT_TOGGLE_RIGHT__", right_toggle_right_css).replace(
+            "__RIGHT_PANEL_DRAWER_CSS__", right_panel_drawer_css
+        ),
+        unsafe_allow_html=True,
     )
-    filter_points_by_boreal = st.checkbox("Filtrera alla punktlager med skoglig värdekärna", value=False)
-    if show_boreal_density:
-        st.caption("Lagret visas på kartan. Legend visas under kartan.")
-    if filter_points_by_boreal:
-        boreal_value_range = st.slider(
-            f"Täthetsvärde ({boreal_min_val}-{boreal_max_val})",
+    toggle_label = "»" if show_right_panel else "«"
+    toggle_help = "Fäll in högerpanelen" if show_right_panel else "Visa högerpanelen"
+    if st.button(toggle_label, key="right_panel_edge_toggle", help=toggle_help):
+        st.session_state[RIGHT_PANEL_OPEN_KEY] = not show_right_panel
+        st.rerun()
+
+analysis_metric_options = ["Punkter", "Unika respondenter"]
+if right_col is not None:
+    point_buffer_default = _session_int("right_panel_point_buffer_m", 0, 0, 3000)
+    analysis_enabled_default = bool(st.session_state.get("right_panel_analysis_enabled", False))
+    analysis_metric_default = str(st.session_state.get("right_panel_analysis_metric", "Punkter"))
+    if analysis_metric_default not in analysis_metric_options:
+        analysis_metric_default = "Punkter"
+    analysis_near_default = _session_int("right_panel_analysis_near_m", 0, 0, 3000)
+    filter_boreal_default = bool(st.session_state.get("right_panel_filter_boreal", False))
+    boreal_range_default = _session_range(
+        "right_panel_boreal_range",
+        (boreal_min_val, boreal_max_val),
+        boreal_min_val,
+        boreal_max_val,
+    )
+    with right_col:
+        st.markdown('<span id="right-panel-content-anchor"></span>', unsafe_allow_html=True)
+        st.subheader("Punktbuffert")
+        point_buffer_m = st.slider("Buffert runt tända punktlager (meter)", 0, 3000, point_buffer_default, 100, key="point_buffer_right")
+        st.subheader("Punktanalys")
+        analysis_enabled = st.checkbox("Visa antal punkter i valt kartlager", value=analysis_enabled_default, key="analysis_enabled_right")
+        analysis_metric = "Punkter"
+        analysis_near_m = 0
+        if analysis_enabled:
+            analysis_metric = st.selectbox(
+                "Mått",
+                analysis_metric_options,
+                index=analysis_metric_options.index(analysis_metric_default),
+                key="analysis_metric_right",
+            )
+            analysis_near_m = st.slider("Närhetszon runt valt kartlager (meter)", 0, 3000, analysis_near_default, 50, key="analysis_near_m_right")
+        else:
+            st.caption("Aktivera analysen för att välja mått och närhetszon.")
+
+        st.subheader(LAYER_LABELS["boreal_density"])
+        st.markdown(
+            "[Vill du veta mer om skogliga värdekärnor? Klicka här](https://geodata.naturvardsverket.se/nedladdning/Skog/Slutrapport_Landskapsanalys_av_skogliga_vardekarnor_i_boreal_region.pdf)"
+        )
+        filter_points_by_boreal = st.checkbox(
+            "Filtrera alla punktlager med skoglig värdekärna",
+            value=filter_boreal_default,
+            key="filter_points_by_boreal_right",
+        )
+        if show_boreal_density:
+            st.caption("Lagret visas på kartan. Legend visas under kartan.")
+        if filter_points_by_boreal:
+            boreal_value_range = st.slider(
+                f"Täthetsvärde ({boreal_min_val}-{boreal_max_val})",
+                boreal_min_val,
+                boreal_max_val,
+                boreal_range_default,
+                1,
+                key="boreal_value_range_right",
+            )
+        else:
+            boreal_value_range = (boreal_min_val, boreal_max_val)
+    st.session_state["right_panel_point_buffer_m"] = int(point_buffer_m)
+    st.session_state["right_panel_analysis_enabled"] = bool(analysis_enabled)
+    st.session_state["right_panel_analysis_metric"] = str(analysis_metric)
+    st.session_state["right_panel_analysis_near_m"] = int(analysis_near_m)
+    st.session_state["right_panel_filter_boreal"] = bool(filter_points_by_boreal)
+    st.session_state["right_panel_boreal_range"] = tuple(int(v) for v in boreal_value_range)
+else:
+    point_buffer_m = _session_int("right_panel_point_buffer_m", 0, 0, 3000)
+    analysis_enabled = bool(st.session_state.get("right_panel_analysis_enabled", False))
+    analysis_metric_raw = str(st.session_state.get("right_panel_analysis_metric", "Punkter"))
+    analysis_metric = analysis_metric_raw if analysis_metric_raw in analysis_metric_options else "Punkter"
+    analysis_near_m = _session_int("right_panel_analysis_near_m", 0, 0, 3000) if analysis_enabled else 0
+    filter_points_by_boreal = bool(st.session_state.get("right_panel_filter_boreal", False))
+    boreal_value_range = (
+        _session_range(
+            "right_panel_boreal_range",
+            (boreal_min_val, boreal_max_val),
             boreal_min_val,
             boreal_max_val,
-            (boreal_min_val, boreal_max_val),
-            1,
         )
-    else:
-        boreal_value_range = (boreal_min_val, boreal_max_val)
+        if filter_points_by_boreal
+        else (boreal_min_val, boreal_max_val)
+    )
 
 if selected_area == "Hela länet":
     area_kind, area_value = "lan", ""
@@ -1697,7 +1850,7 @@ if analysis_enabled:
         mismatch = True
     if show_lan_boundary and area_kind != "lan":
         mismatch = True
-    if mismatch:
+    if mismatch and right_col is not None:
         with right_col:
             st.info(
                 "OBS: Analysen styrs av Arbetsområde, inte av vilka bakgrundslager som visas. "
@@ -1801,7 +1954,10 @@ if show_plats1_points or show_plats2_points or show_sensitive_points or show_non
     if filter_points_by_boreal:
         sampler = _cached_raster_sampler(str(repo_root), BOREAL_RASTER_OVERLAY_JSON)
         if sampler is None:
-            with right_col:
+            if right_col is not None:
+                with right_col:
+                    st.warning("Rasterunderlag för skoglig värdekärna saknas. Bygg overlay först.")
+            else:
                 st.warning("Rasterunderlag för skoglig värdekärna saknas. Bygg overlay först.")
         else:
             vmin, vmax = int(boreal_value_range[0]), int(boreal_value_range[1])
@@ -1809,7 +1965,10 @@ if show_plats1_points or show_plats2_points or show_sensitive_points or show_non
             plats2_points = _filter_points_by_raster_range(plats2_points, sampler, vmin, vmax)
             sensitive_points = _filter_points_by_raster_range(sensitive_points, sampler, vmin, vmax)
             non_sensitive_points = _filter_points_by_raster_range(non_sensitive_points, sampler, vmin, vmax)
-            with right_col:
+            if right_col is not None:
+                with right_col:
+                    st.caption(f"Filter aktivt: skoglig värdekärna {vmin}-{vmax}.")
+            else:
                 st.caption(f"Filter aktivt: skoglig värdekärna {vmin}-{vmax}.")
 
     after_counts = {
@@ -1888,7 +2047,7 @@ if show_plats1_points or show_plats2_points or show_sensitive_points or show_non
                 "Om du nyss byggt om `novus_locked_points.gpkg`, starta om appen eller vänta 5 minuter så cache uppdateras."
             )
 
-if filter_points_by_boreal:
+if filter_points_by_boreal and right_col is not None:
     with right_col:
         st.subheader("Filterresultat")
         vmin, vmax = int(boreal_value_range[0]), int(boreal_value_range[1])
@@ -2010,34 +2169,51 @@ if analysis_enabled:
             layer = theme_layers[key]
             lst_active_layers.append((key, layer, choose_default_field(layer)))
 
-    with right_col:
-        if len(lst_active_layers) > 1:
-            st.warning("Punktanalysen stöder ett aktivt kartlager åt gången. Släck till ett lager för maskad analys.")
-            analysis_blocked_multi_lst = True
-        elif len(lst_active_layers) == 1:
-            st.caption("Punktanalys: arbetsområde + ett aktivt kartlager.")
-            selected_key, selected_lst_layer, selected_field = lst_active_layers[0]
-            if selected_field is not None and selected_field in selected_lst_layer.columns:
-                vals = (
-                    selected_lst_layer[selected_field]
-                    .dropna()
-                    .astype(str)
-                    .str.strip()
-                )
-                uniq = sorted([v for v in vals.unique().tolist() if v != ""])
-                if len(uniq) > 0:
-                    selected_cat = st.selectbox(
-                        "Kategori i valt LST-lager (valfritt)",
-                        ["Alla kategorier"] + uniq,
-                        index=0,
-                        key=f"lst_cat_{selected_key}",
+    if len(lst_active_layers) > 1:
+        analysis_blocked_multi_lst = True
+        if right_col is not None:
+            with right_col:
+                st.warning("Punktanalysen stöder ett aktivt kartlager åt gången. Släck till ett lager för maskad analys.")
+    elif len(lst_active_layers) == 1:
+        selected_key, selected_lst_layer, selected_field = lst_active_layers[0]
+        if right_col is not None:
+            with right_col:
+                st.caption("Punktanalys: arbetsområde + ett aktivt kartlager.")
+                if selected_field is not None and selected_field in selected_lst_layer.columns:
+                    vals = (
+                        selected_lst_layer[selected_field]
+                        .dropna()
+                        .astype(str)
+                        .str.strip()
                     )
-                    if selected_cat != "Alla kategorier":
-                        selected_lst_layer = selected_lst_layer[
-                            selected_lst_layer[selected_field].astype(str).str.strip() == selected_cat
-                        ].copy()
-                        st.caption(f"Kategori: {selected_cat}")
-        else:
+                    uniq = sorted([v for v in vals.unique().tolist() if v != ""])
+                    if len(uniq) > 0:
+                        selected_cat = st.selectbox(
+                            "Kategori i valt LST-lager (valfritt)",
+                            ["Alla kategorier"] + uniq,
+                            index=0,
+                            key=f"lst_cat_{selected_key}",
+                        )
+                        if selected_cat != "Alla kategorier":
+                            selected_lst_layer = selected_lst_layer[
+                                selected_lst_layer[selected_field].astype(str).str.strip() == selected_cat
+                            ].copy()
+                            st.caption(f"Kategori: {selected_cat}")
+        elif selected_field is not None and selected_field in selected_lst_layer.columns:
+            vals = (
+                selected_lst_layer[selected_field]
+                .dropna()
+                .astype(str)
+                .str.strip()
+            )
+            uniq = sorted([v for v in vals.unique().tolist() if v != ""])
+            selected_cat = str(st.session_state.get(f"lst_cat_{selected_key}", "Alla kategorier"))
+            if selected_cat in uniq:
+                selected_lst_layer = selected_lst_layer[
+                    selected_lst_layer[selected_field].astype(str).str.strip() == selected_cat
+                ].copy()
+    elif right_col is not None:
+        with right_col:
             st.caption("Punktanalys: endast arbetsområde.")
 
     if analysis_blocked_multi_lst:
@@ -2058,15 +2234,16 @@ if analysis_enabled:
         summary = _analysis_summary(analysis_pts, units, unit_col, analysis_metric)
         _add_lst_zone_overlay(m, lst_zone)
         bubbles_drawn = _add_analysis_bubbles(m, summary)
-    with right_col:
-        if analysis_blocked_multi_lst:
-            st.caption("Punktanalysen är pausad: välj högst ett kartlager.")
-        elif summary is not None and len(summary) > 0:
-            st.caption(f"Punktanalysen visar {analysis_metric.lower()} i {len(summary)} arbetsområde(n). Summa n: {int(summary['n'].sum())}.")
-            if bubbles_drawn == 0:
-                st.warning("Analysresultat finns men bubblor kunde inte ritas (geometriproblem).")
-        else:
-            st.caption("Ingen träff i punktanalysen med nuvarande val.")
+    if right_col is not None:
+        with right_col:
+            if analysis_blocked_multi_lst:
+                st.caption("Punktanalysen är pausad: välj högst ett kartlager.")
+            elif summary is not None and len(summary) > 0:
+                st.caption(f"Punktanalysen visar {analysis_metric.lower()} i {len(summary)} arbetsområde(n). Summa n: {int(summary['n'].sum())}.")
+                if bubbles_drawn == 0:
+                    st.warning("Analysresultat finns men bubblor kunde inte ritas (geometriproblem).")
+            else:
+                st.caption("Ingen träff i punktanalysen med nuvarande val.")
 
 _attach_leaflet_render_styles(m)
 map_shell = _stable_streamlit_map_shell(m, satellite_base)
@@ -2075,7 +2252,7 @@ dynamic_feature_groups = _dynamic_feature_groups(m)
 with main_col:
     st_folium(
         map_shell,
-        key=f"{MAP_COMPONENT_KEY}_{_map_view_reset_token() if preserve_map_view else 'free'}",
+        key=MAP_COMPONENT_KEY,
         height=920,
         width=None,
         returned_objects=[],
