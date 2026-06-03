@@ -2213,7 +2213,9 @@ if analysis_enabled:
                         "- Appen skapar en tillfällig gemensam analysmask av de valda lagren.\n"
                         "- Varje punkt testas mot hela masken.\n"
                         "- Om en punkt träffar flera polygoner eller flera lager räknas den ändå bara en gång i totalsumman.\n"
-                        "- Tabellen per lager visar separata träffar och kan därför summera till mer än den unika totalsumman."
+                        "- Tabellen per lager visar separata träffar och kan därför summera till mer än den unika totalsumman.\n"
+                        "- Dubbelräknad summa är fel svar på frågan hur många unika platser som redan berörs, "
+                        "men kan vara värdefull om man vill visa hur många skyddslager-träffar platserna har."
                     )
     elif len(lst_active_layers) == 1:
         selected_key, selected_lst_layer, selected_field = lst_active_layers[0]
@@ -2296,9 +2298,16 @@ if analysis_enabled:
                 if layer_summary_rows:
                     unique_total = int(summary["n"].sum())
                     layer_total = int(sum(int(row["Summa n"]) for row in layer_summary_rows))
+                    duplicate_hits = max(0, layer_total - unique_total)
+                    metric_cols = st.columns(3)
+                    metric_cols[0].metric("Unik totalsumma", unique_total)
+                    metric_cols[1].metric("Summa med dubbelräkning", layer_total)
+                    metric_cols[2].metric("Överlapp/dubbelräkning", duplicate_hits)
                     st.caption(
-                        f"Unik totalsumma över valda lager: {unique_total}. "
-                        f"Lager-för-lager summerar till {layer_total} och kan innehålla samma punkt flera gånger."
+                        "Unik totalsumma svarar på hur många platser som berörs av minst ett valt lager. "
+                        "Överlapp/dubbelräkning = summa med dubbelräkning minus unik totalsumma. "
+                        "Summa med dubbelräkning visar alla lagerträffar separat och kan ha värde för att se "
+                        "hur många platser som berörs av flera skydd eller intressen samtidigt."
                     )
                     st.dataframe(pd.DataFrame(layer_summary_rows), hide_index=True, use_container_width=True)
                 if bubbles_drawn == 0:
