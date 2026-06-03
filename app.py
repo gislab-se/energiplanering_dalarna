@@ -91,6 +91,12 @@ LST_BUNDLE_LAYER_BY_KEY = {
     "kulturmiljovard": "kulturmiljovard",
 }
 
+
+def _analysis_layer_label(key: str) -> str:
+    label_key = {"sty": "landskapstyp", "kar": "landskapskaraktar"}.get(key, key)
+    return LAYER_LABELS.get(label_key, key)
+
+
 # Canonical Dalarna grouping for Hemvist (QI) filtering.
 CODE_TO_GROUP_NAME = {
     "2084": "Avesta, Hedemora, Säter",
@@ -1018,14 +1024,21 @@ def _analysis_points(
     return gpd.GeoDataFrame(pd.concat(selected, ignore_index=True), geometry=base.geometry.name, crs=base.crs)
 
 
-def _apply_single_lst_mask(
+def _apply_lst_mask(
     points: gpd.GeoDataFrame,
-    mask_layer: gpd.GeoDataFrame | None,
+    mask_layers: gpd.GeoDataFrame | list[gpd.GeoDataFrame] | None,
     near_m: int = 0,
 ) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame | None]:
     if points is None or len(points) == 0:
         return points, None
-    if mask_layer is None or len(mask_layer) == 0:
+    if mask_layers is None:
+        return points, None
+
+    if isinstance(mask_layers, gpd.GeoDataFrame):
+        raw_layers = [mask_layers]
+    else:
+        raw_layers = [layer for layer in mask_layers if layer is not None and len(layer) > 0]
+    if not raw_layers:
         return points, None
 
     pts = points.to_crs(3006).copy()
@@ -1040,10 +1053,19 @@ def _apply_single_lst_mask(
             g["geometry"] = g.geometry.make_valid()
         except Exception:
             pass
-        g["geometry"] = g.geometry.buffer(0)
+        g = gpd.GeoDataFrame({"geometry": g.geometry.buffer(0)}, geometry="geometry", crs=3006)
         return g[g.geometry.notna() & (~g.geometry.is_empty)].copy()
 
-    mask_gdf = _prepared_mask(mask_layer)
+    prepared_layers = [_prepared_mask(layer) for layer in raw_layers]
+    prepared_layers = [layer for layer in prepared_layers if layer is not None and len(layer) > 0]
+    if not prepared_layers:
+        return pts.to_crs(4326), None
+
+    mask_gdf = gpd.GeoDataFrame(
+        pd.concat(prepared_layers, ignore_index=True),
+        geometry="geometry",
+        crs=3006,
+    )
     if len(mask_gdf) == 0:
         return pts.to_crs(4326), None
 
@@ -1388,6 +1410,7 @@ def _render_active_legends(
     analysis_enabled: bool,
     analysis_metric: str,
     selected_lst_layer: gpd.GeoDataFrame | None,
+    analysis_mask_layer_count: int,
     analysis_blocked_multi_lst: bool,
 ) -> None:
     cards: list[dict[str, object]] = []
@@ -1523,7 +1546,8 @@ def _render_active_legends(
             }
         ]
         if selected_lst_layer is not None and not analysis_blocked_multi_lst:
-            analysis_items.append({"label": "Närhetszon runt valt kartlager", "color": "#0ea5e9"})
+            zone_label = "Närhetszon runt valda kartlager" if analysis_mask_layer_count > 1 else "Närhetszon runt valt kartlager"
+            analysis_items.append({"label": zone_label, "color": "#0ea5e9"})
         cards.append(
             {
                 "title": "Punktanalys",
@@ -1756,7 +1780,7 @@ if right_col is not None:
         st.subheader("Punktbuffert")
         point_buffer_m = st.slider("Buffert runt tända punktlager (meter)", 0, 3000, point_buffer_default, 100, key="point_buffer_right")
         st.subheader("Punktanalys")
-        analysis_enabled = st.checkbox("Visa antal punkter i valt kartlager", value=analysis_enabled_default, key="analysis_enabled_right")
+        analysis_enabled = st.checkbox("Visa antal punkter i valda kartlager", value=analysis_enabled_default, key="analysis_enabled_right")
         analysis_metric = "Punkter"
         analysis_near_m = 0
         if analysis_enabled:
@@ -1766,7 +1790,7 @@ if right_col is not None:
                 index=analysis_metric_options.index(analysis_metric_default),
                 key="analysis_metric_right",
             )
-            analysis_near_m = st.slider("Närhetszon runt valt kartlager (meter)", 0, 3000, analysis_near_default, 50, key="analysis_near_m_right")
+            analysis_near_m = st.slider("Närhetszon runt valda kartlager (meter)", 0, 3000, analysis_near_default, 50, key="analysis_near_m_right")
         else:
             st.caption("Aktivera analysen för att välja mått och närhetszon.")
 
@@ -2147,6 +2171,7 @@ m = _build_map_compat(
 )
 
 selected_lst_layer = None
+selected_lst_layer_count = 0
 analysis_blocked_multi_lst = False
 if analysis_enabled:
     analysis_pts = _analysis_points(
@@ -2169,13 +2194,31 @@ if analysis_enabled:
             layer = theme_layers[key]
             lst_active_layers.append((key, layer, choose_default_field(layer)))
 
+    selected_lst_layers: list[gpd.GeoDataFrame] = []
     if len(lst_active_layers) > 1:
-        analysis_blocked_multi_lst = True
+        selected_lst_layers = [layer for _, layer, _ in lst_active_layers]
+        selected_lst_layer_count = len(selected_lst_layers)
+        layer_labels = [_analysis_layer_label(key) for key, _, _ in lst_active_layers]
         if right_col is not None:
             with right_col:
-                st.warning("Punktanalysen stöder ett aktivt kartlager åt gången. Släck till ett lager för maskad analys.")
+                st.warning(
+                    "Punktanalys med två eller flera kartlager kan ge flera möjliga svar. "
+                    "Totalsumman räknar varje punkt en gång om den ligger i minst ett valt lager. "
+                    "Siffror per lager kan överlappa, så välj lager noggrant och summera inte delresultat utan kontroll."
+                )
+                st.caption(f"Valda analyslager: {', '.join(layer_labels)}.")
+                with st.expander("Så räknas totalsumman", expanded=False):
+                    st.markdown(
+                        "- Lagren mergeas inte permanent i datakällan.\n"
+                        "- Appen skapar en tillfällig gemensam analysmask av de valda lagren.\n"
+                        "- Varje punkt testas mot hela masken.\n"
+                        "- Om en punkt träffar flera polygoner eller flera lager räknas den ändå bara en gång i totalsumman.\n"
+                        "- Tabellen per lager visar separata träffar och kan därför summera till mer än den unika totalsumman."
+                    )
     elif len(lst_active_layers) == 1:
         selected_key, selected_lst_layer, selected_field = lst_active_layers[0]
+        selected_lst_layers = [selected_lst_layer]
+        selected_lst_layer_count = 1
         if right_col is not None:
             with right_col:
                 st.caption("Punktanalys: arbetsområde + ett aktivt kartlager.")
@@ -2198,6 +2241,7 @@ if analysis_enabled:
                             selected_lst_layer = selected_lst_layer[
                                 selected_lst_layer[selected_field].astype(str).str.strip() == selected_cat
                             ].copy()
+                            selected_lst_layers = [selected_lst_layer]
                             st.caption(f"Kategori: {selected_cat}")
         elif selected_field is not None and selected_field in selected_lst_layer.columns:
             vals = (
@@ -2212,34 +2256,51 @@ if analysis_enabled:
                 selected_lst_layer = selected_lst_layer[
                     selected_lst_layer[selected_field].astype(str).str.strip() == selected_cat
                 ].copy()
+                selected_lst_layers = [selected_lst_layer]
     elif right_col is not None:
         with right_col:
             st.caption("Punktanalys: endast arbetsområde.")
 
-    if analysis_blocked_multi_lst:
-        q_suffix = " utan LST-mask (flera LST-lager är tända)"
-    elif selected_lst_layer is None:
+    selected_lst_layer = selected_lst_layers[0] if selected_lst_layers else None
+    selected_lst_layer_count = len(selected_lst_layers)
+
+    if selected_lst_layer is None:
         q_suffix = ""
+    elif selected_lst_layer_count > 1:
+        q_suffix = " inom minst ett av de valda kartlagren"
     else:
-        q_suffix = " inom valt LST-lager"
+        q_suffix = " inom valt kartlager"
     st.caption(f"Fråga: Hur många {q_points.lower()} finns i {q_area}{q_suffix}? Svaret visas i kartan.")
 
-    if analysis_blocked_multi_lst:
-        summary = gpd.GeoDataFrame(columns=["kategori", "n", "geometry"], geometry="geometry", crs=4326)
-        lst_zone = None
-        bubbles_drawn = 0
-    else:
-        analysis_pts, lst_zone = _apply_single_lst_mask(analysis_pts, selected_lst_layer, analysis_near_m)
-        units, unit_col = _analysis_units(area_kind, area_value, lan_boundary, kommuner, kommungrupper)
-        summary = _analysis_summary(analysis_pts, units, unit_col, analysis_metric)
-        _add_lst_zone_overlay(m, lst_zone)
-        bubbles_drawn = _add_analysis_bubbles(m, summary)
+    analysis_pts_base = analysis_pts
+    analysis_pts, lst_zone = _apply_lst_mask(analysis_pts, selected_lst_layers, analysis_near_m)
+    units, unit_col = _analysis_units(area_kind, area_value, lan_boundary, kommuner, kommungrupper)
+    summary = _analysis_summary(analysis_pts, units, unit_col, analysis_metric)
+    layer_summary_rows: list[dict[str, object]] = []
+    if selected_lst_layer_count > 1 and analysis_pts_base is not None and units is not None and len(units) > 0:
+        for key, layer, _ in lst_active_layers:
+            layer_pts, _ = _apply_lst_mask(analysis_pts_base, [layer], analysis_near_m)
+            layer_summary = _analysis_summary(layer_pts, units, unit_col, analysis_metric)
+            layer_summary_rows.append(
+                {
+                    "Kartlager": _analysis_layer_label(key),
+                    "Summa n": int(layer_summary["n"].sum()) if layer_summary is not None and len(layer_summary) > 0 else 0,
+                }
+            )
+    _add_lst_zone_overlay(m, lst_zone)
+    bubbles_drawn = _add_analysis_bubbles(m, summary)
     if right_col is not None:
         with right_col:
-            if analysis_blocked_multi_lst:
-                st.caption("Punktanalysen är pausad: välj högst ett kartlager.")
-            elif summary is not None and len(summary) > 0:
+            if summary is not None and len(summary) > 0:
                 st.caption(f"Punktanalysen visar {analysis_metric.lower()} i {len(summary)} arbetsområde(n). Summa n: {int(summary['n'].sum())}.")
+                if layer_summary_rows:
+                    unique_total = int(summary["n"].sum())
+                    layer_total = int(sum(int(row["Summa n"]) for row in layer_summary_rows))
+                    st.caption(
+                        f"Unik totalsumma över valda lager: {unique_total}. "
+                        f"Lager-för-lager summerar till {layer_total} och kan innehålla samma punkt flera gånger."
+                    )
+                    st.dataframe(pd.DataFrame(layer_summary_rows), hide_index=True, use_container_width=True)
                 if bubbles_drawn == 0:
                     st.warning("Analysresultat finns men bubblor kunde inte ritas (geometriproblem).")
             else:
@@ -2284,5 +2345,6 @@ with main_col:
         analysis_enabled=analysis_enabled,
         analysis_metric=analysis_metric,
         selected_lst_layer=selected_lst_layer,
+        analysis_mask_layer_count=selected_lst_layer_count,
         analysis_blocked_multi_lst=analysis_blocked_multi_lst,
     )
