@@ -522,6 +522,7 @@ def build_map(
     sty_opacity: float = 0.6,
     layer_opacity: float | None = None,
     point_radius: float = 3.5,
+    point_opacity: float = 0.85,
     show_landscape_colored_points: bool = False,
     show_landscape_aggregated_points: bool = False,
     wind_turbines: gpd.GeoDataFrame | None = None,
@@ -535,6 +536,7 @@ def build_map(
     if layer_opacity is not None:
         layer_opacity = max(0.0, min(1.0, float(layer_opacity)))
     point_radius = max(1.0, float(point_radius))
+    point_opacity = max(0.05, min(1.0, float(point_opacity)))
     small_point_radius = max(1.0, min(2.5, point_radius - 1.0))
 
     sty_vals = sty[sty_field].fillna("(saknas)").astype(str).map(_normalize_landscape_type)
@@ -831,72 +833,66 @@ def build_map(
         gdf["_popup_html"] = gdf.apply(_popup_html, axis=1)
         return folium.GeoJsonPopup(fields=["_popup_html"], labels=False, localize=False, style="margin: 0;")
 
+    def _prepare_point_layer(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        out = gdf.copy()
+        if "_map_point_color" in out.columns:
+            out["_grp_color"] = out["_map_point_color"].fillna("#9ca3af").astype(str)
+        elif "kommungrupp" in out.columns:
+            out["_grp_color"] = out["kommungrupp"].map(_group_color)
+        else:
+            out["_grp_color"] = "#9ca3af"
+        return out
+
+    def _point_style(feature: dict) -> dict:
+        return {
+            "fillColor": feature["properties"].get("_grp_color", "#9ca3af"),
+            "color": "transparent",
+            "weight": 0,
+            "fillOpacity": point_opacity,
+        }
+
     buffer_sources: list[gpd.GeoDataFrame] = []
 
     if show_plats1_points and plats1_points is not None and len(plats1_points) > 0:
-        p1 = plats1_points.copy()
-        p1["_grp_color"] = p1["kommungrupp"].map(_group_color)
+        p1 = _prepare_point_layer(plats1_points)
         folium.GeoJson(
             p1,
             name="Vald plats 1",
-            marker=folium.CircleMarker(radius=point_radius, weight=0, color="transparent", fill=True, fill_opacity=0.8),
-            style_function=lambda f: {
-                "fillColor": f["properties"].get("_grp_color", "#9ca3af"),
-                "color": "transparent",
-                "weight": 0,
-                "fillOpacity": 0.85,
-            },
+            marker=folium.CircleMarker(radius=point_radius, weight=0, color="transparent", fill=True, fill_opacity=point_opacity),
+            style_function=_point_style,
             popup=_point_popup(p1),
         ).add_to(m)
         buffer_sources.append(p1)
 
     if show_plats2_points and plats2_points is not None and len(plats2_points) > 0:
-        p2 = plats2_points.copy()
-        p2["_grp_color"] = p2["kommungrupp"].map(_group_color)
+        p2 = _prepare_point_layer(plats2_points)
         folium.GeoJson(
             p2,
             name="Vald plats 2",
-            marker=folium.CircleMarker(radius=point_radius, weight=0, color="transparent", fill=True, fill_opacity=0.8),
-            style_function=lambda f: {
-                "fillColor": f["properties"].get("_grp_color", "#9ca3af"),
-                "color": "transparent",
-                "weight": 0,
-                "fillOpacity": 0.85,
-            },
+            marker=folium.CircleMarker(radius=point_radius, weight=0, color="transparent", fill=True, fill_opacity=point_opacity),
+            style_function=_point_style,
             popup=_point_popup(p2),
         ).add_to(m)
         buffer_sources.append(p2)
 
     if show_sensitive_points and sensitive_points is not None and len(sensitive_points) > 0:
-        sp = sensitive_points.copy()
-        sp["_grp_color"] = sp["kommungrupp"].map(_group_color)
+        sp = _prepare_point_layer(sensitive_points)
         folium.GeoJson(
             sp,
             name="Valda platser som är extra känsliga för ny infrastruktur",
-            marker=folium.CircleMarker(radius=point_radius, weight=0, color="transparent", fill=True, fill_opacity=0.9),
-            style_function=lambda f: {
-                "fillColor": f["properties"].get("_grp_color", "#9ca3af"),
-                "color": "transparent",
-                "weight": 0,
-                "fillOpacity": 0.9,
-            },
+            marker=folium.CircleMarker(radius=point_radius, weight=0, color="transparent", fill=True, fill_opacity=point_opacity),
+            style_function=_point_style,
             popup=_point_popup(sp),
         ).add_to(m)
         buffer_sources.append(sp)
 
     if show_non_sensitive_points and non_sensitive_points is not None and len(non_sensitive_points) > 0:
-        nsp = non_sensitive_points.copy()
-        nsp["_grp_color"] = nsp["kommungrupp"].map(_group_color)
+        nsp = _prepare_point_layer(non_sensitive_points)
         folium.GeoJson(
             nsp,
             name="Valda platser som INTE är känsliga för ny infrastruktur",
-            marker=folium.CircleMarker(radius=point_radius, weight=0, color="transparent", fill=True, fill_opacity=0.9),
-            style_function=lambda f: {
-                "fillColor": f["properties"].get("_grp_color", "#9ca3af"),
-                "color": "transparent",
-                "weight": 0,
-                "fillOpacity": 0.9,
-            },
+            marker=folium.CircleMarker(radius=point_radius, weight=0, color="transparent", fill=True, fill_opacity=point_opacity),
+            style_function=_point_style,
             popup=_point_popup(nsp),
         ).add_to(m)
         buffer_sources.append(nsp)

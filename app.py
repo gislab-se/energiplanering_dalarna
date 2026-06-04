@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
 import html
 import inspect
 import importlib.util
 import json
+import numbers
 import re
 import sys
 import unicodedata
@@ -67,6 +69,23 @@ THEME_LAYER_STYLES = {
     "nature_reserve": "#d946ef",
     "kulturmiljovard": "#f59e0b",
 }
+POINT_KOMMUN_PALETTE = [
+    "#4e79a7",
+    "#f28e2b",
+    "#59a14f",
+    "#e15759",
+    "#76b7b2",
+    "#af7aa1",
+    "#edc948",
+    "#b07aa1",
+    "#ff9da7",
+    "#9c755f",
+    "#bab0ab",
+    "#1b9e77",
+    "#d95f02",
+    "#7570b3",
+    "#66a61e",
+]
 THEME_LAYER_SHAPES = {}
 ADMIN_LAYER_STYLES = {
     "lan_boundary": ("Länsgräns", "#b91c1c"),
@@ -95,6 +114,14 @@ LST_BUNDLE_LAYER_BY_KEY = {
 def _analysis_layer_label(key: str) -> str:
     label_key = {"sty": "landskapstyp", "kar": "landskapskaraktar"}.get(key, key)
     return LAYER_LABELS.get(label_key, key)
+
+
+def _analysis_layer_color(key: str, fallback_idx: int = 0) -> str:
+    label_key = {"sty": "landskapstyp", "kar": "landskapskaraktar"}.get(key, key)
+    if label_key in THEME_LAYER_STYLES:
+        return THEME_LAYER_STYLES[label_key]
+    palette = ["#2563eb", "#16a34a", "#dc2626", "#9333ea", "#0891b2", "#ca8a04"]
+    return palette[fallback_idx % len(palette)]
 
 
 # Canonical Dalarna grouping for Hemvist (QI) filtering.
@@ -842,6 +869,165 @@ def _numkey(series: pd.Series) -> pd.Series:
     return out.fillna("")
 
 
+HOME_CODE_COLS = ["resp_kom", "home_kommunkod", "Q1", "q1", "hemvist_q1", "hemvist_kommunkod"]
+COORD_CODE_COLS = ["coord_kom", "kommunkod"]
+
+
+def _first_existing_col(gdf: gpd.GeoDataFrame | pd.DataFrame, candidates: list[str]) -> str | None:
+    for c in candidates:
+        if c in gdf.columns:
+            return c
+    return None
+
+
+def _blank_key_series(gdf: gpd.GeoDataFrame | pd.DataFrame) -> pd.Series:
+    return pd.Series("", index=gdf.index, dtype="string")
+
+
+def _code_to_group_lookup(kommuner: gpd.GeoDataFrame | None) -> dict[str, str]:
+    code_to_gid: dict[str, str] = {}
+    if (
+        kommuner is not None
+        and len(kommuner) > 0
+        and "kommunkod" in kommuner.columns
+        and "kommungrupp_id" in kommuner.columns
+    ):
+        km = kommuner[["kommunkod", "kommungrupp_id"]].dropna().drop_duplicates().copy()
+        km["kommunkod_norm"] = _numkey(km["kommunkod"])
+        km["kommungrupp_id_norm"] = _numkey(km["kommungrupp_id"])
+        code_to_gid = dict(zip(km["kommunkod_norm"], km["kommungrupp_id_norm"]))
+    return code_to_gid or CODE_TO_GROUP_ID
+
+
+def _point_coord_code(points: gpd.GeoDataFrame | pd.DataFrame) -> pd.Series:
+    col = _first_existing_col(points, COORD_CODE_COLS)
+    if col is None:
+        return _blank_key_series(points)
+    return _numkey(points[col])
+
+
+def _point_home_code(points: gpd.GeoDataFrame | pd.DataFrame) -> pd.Series:
+    col = _first_existing_col(points, HOME_CODE_COLS)
+    if col is None:
+        return _blank_key_series(points)
+    return _numkey(points[col])
+
+
+def _point_coord_group(points: gpd.GeoDataFrame | pd.DataFrame, code_to_gid: dict[str, str]) -> pd.Series:
+    if "coord_kommungrupp_id_current" in points.columns:
+        gid = _numkey(points["coord_kommungrupp_id_current"])
+        if (gid.str.len() > 0).any():
+            return gid
+    coord_code = _point_coord_code(points)
+    return coord_code.map(code_to_gid).fillna("")
+
+
+def _point_home_group(points: gpd.GeoDataFrame | pd.DataFrame, code_to_gid: dict[str, str]) -> pd.Series:
+    if "home_kommungrupp_id_current" in points.columns:
+        gid = _numkey(points["home_kommungrupp_id_current"])
+        if (gid.str.len() > 0).any():
+            return gid
+    home_code = _point_home_code(points)
+    return home_code.map(code_to_gid).fillna("")
+
+
+def _point_analysis_key(
+    points: gpd.GeoDataFrame,
+    filter_mode: str,
+    area_kind: str,
+    kommuner: gpd.GeoDataFrame | None,
+) -> pd.Series | None:
+    if points is None:
+        return None
+    if len(points) == 0:
+        return _blank_key_series(points)
+    if area_kind in {"kommun", "all_kommuner"}:
+        coord_key = _point_coord_code(points)
+        home_key = _point_home_code(points)
+    elif area_kind in {"kommungrupp", "all_kommungrupper"}:
+        code_to_gid = _code_to_group_lookup(kommuner)
+        coord_key = _point_coord_group(points, code_to_gid)
+        home_key = _point_home_group(points, code_to_gid)
+    else:
+        return None
+
+    if filter_mode == "Hemvist (QI)":
+        return home_key
+    if filter_mode == "Hemvist inom valt arbetsområde":
+        return home_key.where((home_key.str.len() > 0) & (home_key == coord_key), "")
+    if (coord_key.str.len() > 0).any():
+        return coord_key
+    return None
+
+
+def _point_color_area_kind(area_kind: str) -> str:
+    if area_kind in {"kommun", "all_kommuner"}:
+        return "all_kommuner"
+    return "all_kommungrupper"
+
+
+def _point_color_caption(filter_mode: str, area_kind: str) -> str:
+    unit = "kommun" if _point_color_area_kind(area_kind) == "all_kommuner" else "kommungrupp"
+    if filter_mode == "Koordinatläge (spatialt)":
+        basis = "punktens koordinatläge"
+    elif filter_mode == "Hemvist (QI)":
+        basis = "respondentens hemvist"
+    else:
+        basis = "matchande hemvist och koordinatläge"
+    return f"Färg visar {unit} utifrån {basis}."
+
+
+def _point_color_maps(
+    area_kind: str,
+    kommun_code_by_name: dict[str, str],
+    group_id_by_name: dict[str, str],
+) -> tuple[dict[str, str], dict[str, str], list[dict[str, str]]]:
+    color_area = _point_color_area_kind(area_kind)
+    if color_area == "all_kommuner":
+        sorted_items = sorted(kommun_code_by_name.items(), key=lambda item: item[0])
+        color_by_key = {
+            str(code): POINT_KOMMUN_PALETTE[idx % len(POINT_KOMMUN_PALETTE)]
+            for idx, (_, code) in enumerate(sorted_items)
+        }
+        label_by_key = {str(code): str(name) for name, code in sorted_items}
+    else:
+        group_palette = getattr(map_factory, "GROUP_PALETTE", {})
+        sorted_items = sorted(group_id_by_name.items(), key=lambda item: int(item[1]) if str(item[1]).isdigit() else 999)
+        color_by_key = {
+            str(gid): group_palette.get(int(gid), "#9ca3af") if str(gid).isdigit() else "#9ca3af"
+            for _, gid in sorted_items
+        }
+        label_by_key = {str(gid): str(name) for name, gid in sorted_items}
+
+    legend_items = [
+        {"label": label_by_key[key], "color": color_by_key.get(key, "#9ca3af"), "shape": "circle"}
+        for key in label_by_key.keys()
+    ]
+    return color_by_key, label_by_key, legend_items
+
+
+def _apply_point_display_colors(
+    gdf: gpd.GeoDataFrame | None,
+    filter_mode: str,
+    area_kind: str,
+    kommuner: gpd.GeoDataFrame | None,
+    color_by_key: dict[str, str],
+    label_by_key: dict[str, str],
+) -> gpd.GeoDataFrame | None:
+    if gdf is None or len(gdf) == 0:
+        return gdf
+    out = gdf.copy()
+    color_area = _point_color_area_kind(area_kind)
+    key = _point_analysis_key(out, filter_mode, color_area, kommuner)
+    if key is None:
+        key = _point_coord_group(out, _code_to_group_lookup(kommuner))
+    key = key.reindex(out.index).fillna("").astype("string")
+    out["_map_point_key"] = key
+    out["_map_point_color"] = key.map(color_by_key).fillna("#9ca3af")
+    out["_map_point_label"] = key.map(label_by_key).fillna("(saknas)")
+    return out
+
+
 def _norm_group_name(value: str) -> str:
     s = str(value).strip().lower()
     s = (
@@ -870,7 +1056,7 @@ def _apply_area_filter(
     kommuner: gpd.GeoDataFrame | None,
     kommungrupper: gpd.GeoDataFrame | None,
 ) -> gpd.GeoDataFrame | None:
-    if gdf is None or len(gdf) == 0 or area_kind in {"lan", "all_kommuner", "all_kommungrupper"}:
+    if gdf is None or len(gdf) == 0 or area_kind == "lan":
         return gdf
 
     def _first_existing_col(candidates: list[str]) -> str | None:
@@ -893,76 +1079,147 @@ def _apply_area_filter(
     if not code_to_gid:
         code_to_gid = CODE_TO_GROUP_ID
 
-    # Spatial filter mode: filter by coordinate municipality code (coord_kom), not polygon clip.
-    if filter_mode == "Koordinatläge (spatialt)":
+    def _filter_by_coordinate(source: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        # Coordinate mode uses inherited municipality ids on the point, not polygon clip.
+        if source is None or len(source) == 0:
+            return source
         if area_kind == "kommun":
             code = kommun_code_by_name.get(area_value)
             if code is None:
-                return gdf.iloc[0:0].copy()
+                return source.iloc[0:0].copy()
             coord_col = _first_existing_col(["coord_kom", "kommunkod"])
             if coord_col is None:
-                return gdf.iloc[0:0].copy()
-            return gdf[_numkey(gdf[coord_col]) == str(code)]
+                return source.iloc[0:0].copy()
+            return source[_numkey(source[coord_col]) == str(code)]
 
         if area_kind == "kommungrupp":
             gid = group_id_by_name.get(area_value)
             if gid is None:
-                return gdf.iloc[0:0].copy()
+                return source.iloc[0:0].copy()
             gid_norm = str(gid)
 
-            if "coord_kommungrupp_id_current" in gdf.columns:
-                coord_gid = _numkey(gdf["coord_kommungrupp_id_current"])
+            if "coord_kommungrupp_id_current" in source.columns:
+                coord_gid = _numkey(source["coord_kommungrupp_id_current"])
                 if (coord_gid.str.len() > 0).any():
-                    return gdf[coord_gid == gid_norm]
+                    return source[coord_gid == gid_norm]
 
             coord_col = _first_existing_col(["coord_kom", "kommunkod"])
             if coord_col is None:
-                return gdf.iloc[0:0].copy()
-            derived_gid = _numkey(gdf[coord_col]).map(code_to_gid)
-            return gdf[derived_gid.astype(str) == gid_norm]
+                return source.iloc[0:0].copy()
+            derived_gid = _numkey(source[coord_col]).map(code_to_gid)
+            return source[derived_gid.astype(str) == gid_norm]
 
-        return gdf.iloc[0:0].copy()
+        if area_kind == "all_kommuner":
+            coord_col = _first_existing_col(["coord_kom", "kommunkod"])
+            if coord_col is None:
+                return source
+            allowed = {str(v) for v in kommun_code_by_name.values() if str(v)}
+            return source[_numkey(source[coord_col]).isin(allowed)]
 
-    # Hemvist (QI): filter by respondent home (resp_kom), not point location.
-    if area_kind == "kommun":
-        code = kommun_code_by_name.get(area_value)
-        if code is None:
-            return gdf.iloc[0:0].copy()
-        home_col = _first_existing_col(["resp_kom", "home_kommunkod", "Q1", "q1", "hemvist_q1", "hemvist_kommunkod"])
-        if home_col is None:
-            return gdf.iloc[0:0].copy()
-        return gdf[_numkey(gdf[home_col]) == str(code)]
+        if area_kind == "all_kommungrupper":
+            allowed = {str(v) for v in group_id_by_name.values() if str(v)}
+            if "coord_kommungrupp_id_current" in source.columns:
+                coord_gid = _numkey(source["coord_kommungrupp_id_current"])
+                if (coord_gid.str.len() > 0).any():
+                    return source[coord_gid.isin(allowed)]
+            coord_col = _first_existing_col(["coord_kom", "kommunkod"])
+            if coord_col is None:
+                return source
+            derived_gid = _numkey(source[coord_col]).map(code_to_gid)
+            return source[derived_gid.astype(str).isin(allowed)]
 
-    if area_kind == "kommungrupp":
-        gid = group_id_by_name.get(area_value)
-        if gid is None:
-            return gdf.iloc[0:0].copy()
-        gid_norm = str(gid)
+        return source.iloc[0:0].copy()
 
-        # Primary: explicit current group-id field on points.
-        if "home_kommungrupp_id_current" in gdf.columns:
-            gid_col = _numkey(gdf["home_kommungrupp_id_current"])
-            if (gid_col.str.len() > 0).any():
-                return gdf[gid_col == gid_norm]
+    def _filter_by_home(source: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        # Hemvist (QI): filter by respondent home (resp_kom), not point location.
+        if source is None or len(source) == 0:
+            return source
+        if area_kind == "kommun":
+            code = kommun_code_by_name.get(area_value)
+            if code is None:
+                return source.iloc[0:0].copy()
+            home_col = _first_existing_col(["resp_kom", "home_kommunkod", "Q1", "q1", "hemvist_q1", "hemvist_kommunkod"])
+            if home_col is None:
+                return source.iloc[0:0].copy()
+            return source[_numkey(source[home_col]) == str(code)]
 
-        # Secondary: derive kommungrupp from resp_kom/home_kommunkod.
-        home_code_col = _first_existing_col(["resp_kom", "home_kommunkod", "Q1", "q1", "hemvist_q1", "hemvist_kommunkod"])
-        if home_code_col is not None:
-            derived_gid = _numkey(gdf[home_code_col]).map(code_to_gid)
-            out = gdf[derived_gid.astype(str) == gid_norm]
-            if len(out) > 0 or derived_gid.notna().any():
-                return out
+        if area_kind == "kommungrupp":
+            gid = group_id_by_name.get(area_value)
+            if gid is None:
+                return source.iloc[0:0].copy()
+            gid_norm = str(gid)
 
-        # Secondary: use current group-name field when present.
-        if "home_kommungrupp_current" in gdf.columns:
-            wanted = _norm_group_name_safe(area_value)
-            curr = gdf["home_kommungrupp_current"].fillna("").astype(str).map(_norm_group_name_safe)
-            if (curr.str.len() > 0).any():
-                return gdf[curr == wanted]
+            # Primary: explicit current group-id field on points.
+            if "home_kommungrupp_id_current" in source.columns:
+                gid_col = _numkey(source["home_kommungrupp_id_current"])
+                if (gid_col.str.len() > 0).any():
+                    return source[gid_col == gid_norm]
 
-        return gdf.iloc[0:0].copy()
+            # Secondary: derive kommungrupp from resp_kom/home_kommunkod.
+            home_code_col = _first_existing_col(["resp_kom", "home_kommunkod", "Q1", "q1", "hemvist_q1", "hemvist_kommunkod"])
+            if home_code_col is not None:
+                derived_gid = _numkey(source[home_code_col]).map(code_to_gid)
+                out = source[derived_gid.astype(str) == gid_norm]
+                if len(out) > 0 or derived_gid.notna().any():
+                    return out
 
-    return gdf
+            # Secondary: use current group-name field when present.
+            if "home_kommungrupp_current" in source.columns:
+                wanted = _norm_group_name_safe(area_value)
+                curr = source["home_kommungrupp_current"].fillna("").astype(str).map(_norm_group_name_safe)
+                if (curr.str.len() > 0).any():
+                    return source[curr == wanted]
+
+            return source.iloc[0:0].copy()
+
+        if area_kind == "all_kommuner":
+            home_col = _first_existing_col(["resp_kom", "home_kommunkod", "Q1", "q1", "hemvist_q1", "hemvist_kommunkod"])
+            if home_col is None:
+                return source.iloc[0:0].copy()
+            allowed = {str(v) for v in kommun_code_by_name.values() if str(v)}
+            return source[_numkey(source[home_col]).isin(allowed)]
+
+        if area_kind == "all_kommungrupper":
+            allowed = {str(v) for v in group_id_by_name.values() if str(v)}
+            if "home_kommungrupp_id_current" in source.columns:
+                gid_col = _numkey(source["home_kommungrupp_id_current"])
+                if (gid_col.str.len() > 0).any():
+                    return source[gid_col.isin(allowed)]
+            home_code_col = _first_existing_col(["resp_kom", "home_kommunkod", "Q1", "q1", "hemvist_q1", "hemvist_kommunkod"])
+            if home_code_col is not None:
+                derived_gid = _numkey(source[home_code_col]).map(code_to_gid)
+                out = source[derived_gid.astype(str).isin(allowed)]
+                if len(out) > 0 or derived_gid.notna().any():
+                    return out
+            if "home_kommungrupp_current" in source.columns:
+                wanted = {_norm_group_name_safe(name) for name in group_id_by_name.keys()}
+                curr = source["home_kommungrupp_current"].fillna("").astype(str).map(_norm_group_name_safe)
+                if (curr.str.len() > 0).any():
+                    return source[curr.isin(wanted)]
+            return source.iloc[0:0].copy()
+
+        return source
+
+    def _filter_by_same_area(source: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        if source is None or len(source) == 0:
+            return source
+        if area_kind == "all_kommuner":
+            coord_key = _point_coord_code(source)
+            home_key = _point_home_code(source)
+            allowed = {str(v) for v in kommun_code_by_name.values() if str(v)}
+            return source[(home_key.str.len() > 0) & (home_key == coord_key) & home_key.isin(allowed)]
+        if area_kind == "all_kommungrupper":
+            coord_key = _point_coord_group(source, code_to_gid)
+            home_key = _point_home_group(source, code_to_gid)
+            allowed = {str(v) for v in group_id_by_name.values() if str(v)}
+            return source[(home_key.str.len() > 0) & (home_key == coord_key) & home_key.isin(allowed)]
+        return _filter_by_home(_filter_by_coordinate(source))
+
+    if filter_mode == "Koordinatläge (spatialt)":
+        return _filter_by_coordinate(gdf)
+    if filter_mode == "Hemvist inom valt arbetsområde":
+        return _filter_by_same_area(gdf)
+    return _filter_by_home(gdf)
 
 
 def _analysis_units(
@@ -977,21 +1234,33 @@ def _analysis_units(
         out["kategori"] = "Dalarna"
         return out[["kategori", out.geometry.name]].rename(columns={out.geometry.name: "geometry"}), "kategori"
     if area_kind == "all_kommuner" and kommuner is not None and len(kommuner) > 0:
-        return kommuner[["kommunnamn", kommuner.geometry.name]].rename(columns={kommuner.geometry.name: "geometry"}), "kommunnamn"
+        cols = ["kommunnamn", kommuner.geometry.name]
+        if "kommunkod" in kommuner.columns:
+            cols.insert(1, "kommunkod")
+        return kommuner[cols].rename(columns={kommuner.geometry.name: "geometry"}), "kommunnamn"
     if area_kind == "all_kommungrupper" and kommungrupper is not None and len(kommungrupper) > 0:
-        return kommungrupper[["kommungrupp_namn", kommungrupper.geometry.name]].rename(columns={kommungrupper.geometry.name: "geometry"}), "kommungrupp_namn"
+        cols = ["kommungrupp_namn", kommungrupper.geometry.name]
+        if "kommungrupp_id" in kommungrupper.columns:
+            cols.insert(1, "kommungrupp_id")
+        return kommungrupper[cols].rename(columns={kommungrupper.geometry.name: "geometry"}), "kommungrupp_namn"
     if area_kind == "kommun" and kommuner is not None and len(kommuner) > 0:
         k = kommuner[kommuner["kommunnamn"].astype(str) == str(area_value)].copy()
         if len(k) == 0:
             return None, "kategori"
         k["kategori"] = str(area_value)
-        return k[["kategori", k.geometry.name]].rename(columns={k.geometry.name: "geometry"}), "kategori"
+        cols = ["kategori", k.geometry.name]
+        if "kommunkod" in k.columns:
+            cols.insert(1, "kommunkod")
+        return k[cols].rename(columns={k.geometry.name: "geometry"}), "kategori"
     if area_kind == "kommungrupp" and kommungrupper is not None and len(kommungrupper) > 0:
         kg = kommungrupper[kommungrupper["kommungrupp_namn"].astype(str) == str(area_value)].copy()
         if len(kg) == 0:
             return None, "kategori"
         kg["kategori"] = str(area_value)
-        return kg[["kategori", kg.geometry.name]].rename(columns={kg.geometry.name: "geometry"}), "kategori"
+        cols = ["kategori", kg.geometry.name]
+        if "kommungrupp_id" in kg.columns:
+            cols.insert(1, "kommungrupp_id")
+        return kg[cols].rename(columns={kg.geometry.name: "geometry"}), "kategori"
     return None, "kategori"
 
 
@@ -1102,6 +1371,12 @@ def _analysis_summary(
     units: gpd.GeoDataFrame,
     unit_col: str,
     metric_mode: str,
+    filter_mode: str = "Koordinatläge (spatialt)",
+    area_kind: str = "lan",
+    area_value: str = "",
+    kommun_code_by_name: dict[str, str] | None = None,
+    group_id_by_name: dict[str, str] | None = None,
+    kommuner: gpd.GeoDataFrame | None = None,
 ) -> gpd.GeoDataFrame:
     if points is None or len(points) == 0 or units is None or len(units) == 0:
         if units is None or len(units) == 0:
@@ -1130,8 +1405,52 @@ def _analysis_summary(
     u = u[u.geometry.notna() & (~u.geometry.is_empty)].copy()
     if len(u) == 0:
         return gpd.GeoDataFrame(columns=["kategori", "n", "geometry"], geometry="geometry", crs=4326)
+
+    key_cols: list[str] = []
+    if area_kind in {"kommun", "all_kommuner"} and "kommunkod" in u.columns:
+        key_cols.append("kommunkod")
+    if area_kind in {"kommungrupp", "all_kommungrupper"} and "kommungrupp_id" in u.columns:
+        key_cols.append("kommungrupp_id")
+    unit_cols = list(dict.fromkeys([unit_col, *key_cols, u.geometry.name]))
+    u_join = gpd.GeoDataFrame(
+        u[unit_cols].rename(columns={unit_col: "kategori", u.geometry.name: "geometry"}),
+        geometry="geometry",
+        crs=u.crs,
+    )
+
+    point_key = _point_analysis_key(p, filter_mode, area_kind, kommuner)
+    if point_key is not None:
+        kommun_code_by_name = kommun_code_by_name or {}
+        group_id_by_name = group_id_by_name or {}
+        if area_kind in {"kommun", "all_kommuner"}:
+            if "kommunkod" in u_join.columns:
+                unit_key = _numkey(u_join["kommunkod"])
+            elif area_kind == "kommun" and area_value:
+                unit_key = pd.Series(str(kommun_code_by_name.get(area_value, "")), index=u_join.index, dtype="string")
+            else:
+                unit_key = u_join["kategori"].astype(str).map(kommun_code_by_name).fillna("")
+        else:
+            if "kommungrupp_id" in u_join.columns:
+                unit_key = _numkey(u_join["kommungrupp_id"])
+            elif area_kind == "kommungrupp" and area_value:
+                unit_key = pd.Series(str(group_id_by_name.get(area_value, "")), index=u_join.index, dtype="string")
+            else:
+                unit_key = u_join["kategori"].astype(str).map(group_id_by_name).fillna("")
+
+        point_key = point_key.reindex(p.index).fillna("").astype("string")
+        use_key_counts = (filter_mode != "Koordinatläge (spatialt)") or (point_key.str.len() > 0).any()
+        if use_key_counts and (unit_key.astype("string").str.len() > 0).any():
+            p_keys = pd.DataFrame({"_unit_key": point_key.astype("string")})
+            p_keys = p_keys[p_keys["_unit_key"].str.len() > 0]
+            counts = p_keys.groupby("_unit_key").size().rename("n").reset_index()
+            out = u_join.copy()
+            out["_unit_key"] = unit_key.astype("string")
+            out = out.merge(counts, on="_unit_key", how="left")
+            out["n"] = out["n"].fillna(0).astype(int)
+            out["geometry"] = gpd.GeoSeries(out.geometry, crs=3006).representative_point()
+            return gpd.GeoDataFrame(out[["kategori", "n", "geometry"]], geometry="geometry", crs=3006).to_crs(4326)
+
     p_join = gpd.GeoDataFrame(p[[p.geometry.name]].rename(columns={p.geometry.name: "geometry"}), geometry="geometry", crs=p.crs)
-    u_join = gpd.GeoDataFrame(u[[unit_col, u.geometry.name]].rename(columns={unit_col: "kategori", u.geometry.name: "geometry"}), geometry="geometry", crs=u.crs)
     joined = gpd.sjoin(p_join, u_join, how="inner", predicate="intersects")
     counts = joined.groupby("kategori").size().rename("n").reset_index()
     out = u_join.merge(counts, on="kategori", how="left")
@@ -1208,7 +1527,227 @@ def _add_analysis_bubbles(m: folium.Map, summary: gpd.GeoDataFrame) -> int:
                     "box-shadow:0 2px 4px rgba(0,0,0,0.20);"
                     "white-space:nowrap;"
                     "transform: translate(-50%, -108%);"
-                    f"\">{label}: {n}</div>"
+                    f"\">{html.escape(label)}</div>"
+                ),
+            ),
+        ).add_to(m)
+        drawn += 1
+    return drawn
+
+
+def _analysis_anchor_point(units: gpd.GeoDataFrame | None) -> Point | None:
+    if units is None or len(units) == 0:
+        return None
+    try:
+        u = gpd.GeoDataFrame(units.copy(), geometry=units.geometry.name, crs=units.crs or 4326).to_crs(3006)
+    except Exception:
+        return None
+    u = u[u.geometry.notna() & (~u.geometry.is_empty)].copy()
+    if len(u) == 0:
+        return None
+    try:
+        u["geometry"] = u.geometry.make_valid()
+    except Exception:
+        pass
+    try:
+        geom = u.geometry.union_all()
+    except Exception:
+        geom = u.geometry.unary_union
+    if geom is None or getattr(geom, "is_empty", True):
+        return None
+    try:
+        pt = geom.representative_point()
+    except Exception:
+        pt = geom.centroid
+    if pt is None or getattr(pt, "is_empty", True):
+        return None
+    try:
+        return gpd.GeoSeries([pt], crs=3006).to_crs(4326).iloc[0]
+    except Exception:
+        return None
+
+
+def _add_analysis_layer_total_bubbles(
+    m: folium.Map,
+    units: gpd.GeoDataFrame | None,
+    layer_summary_rows: list[dict[str, object]],
+    unique_total: int,
+    overlap_total: int,
+) -> int:
+    if not layer_summary_rows:
+        return 0
+    pt = _analysis_anchor_point(units)
+    if pt is None:
+        return 0
+
+    bubble_rows = []
+    popup_rows = []
+    max_n = max(
+        1,
+        int(unique_total),
+        int(overlap_total),
+        *[int(row.get("Antal punkter", row.get("Summa n", 0)) or 0) for row in layer_summary_rows],
+    )
+    for row in layer_summary_rows:
+        label = str(row.get("Kartlager", "Kartlager"))
+        n = int(row.get("Antal punkter", row.get("Summa n", 0)) or 0)
+        color = str(row.get("_color", "#64748b"))
+        scale = 0.82 + 0.28 * ((n / max_n) ** 0.5)
+        bubble_rows.append(
+            "<div style=\""
+            "display:flex;align-items:center;gap:6px;"
+            "background:rgba(255,255,255,0.94);"
+            "border:1px solid rgba(15,23,42,0.24);"
+            "border-radius:999px;padding:4px 8px;"
+            "font-size:12px;font-weight:700;line-height:1.15;color:#0f172a;"
+            "box-shadow:0 2px 5px rgba(15,23,42,0.18);"
+            f"transform:scale({scale:.2f});transform-origin:left center;"
+            "\">"
+            f"<span style=\"width:9px;height:9px;border-radius:999px;background:{html.escape(color)};display:inline-block;\"></span>"
+            f"<span style=\"max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;\">{html.escape(label)}</span>"
+            f"<span>{n}</span>"
+            "</div>"
+        )
+        popup_rows.append(f"<tr><td>{html.escape(label)}</td><td style=\"text-align:right;\">{n}</td></tr>")
+
+    duplicate_hits = max(0, int(overlap_total) - int(unique_total))
+    total_label = f"Summa: {int(unique_total)} ({int(overlap_total)} med överlapp)"
+    bubble_rows.append(
+        "<div style=\""
+        "display:inline-flex;align-items:center;gap:6px;"
+        "background:rgba(17,24,39,0.94);color:#ffffff;"
+        "border:1px solid rgba(255,255,255,0.45);"
+        "border-radius:999px;padding:5px 10px;"
+        "font-size:12px;font-weight:800;line-height:1.15;"
+        "box-shadow:0 2px 6px rgba(15,23,42,0.24);"
+        "\">"
+        f"{html.escape(total_label)}"
+        "</div>"
+    )
+    popup_html = (
+        "<div style=\"font-size:13px;\">"
+        "<strong>Punktanalys</strong>"
+        "<table style=\"border-collapse:collapse;margin-top:6px;width:100%;\">"
+        "<tbody>"
+        + "".join(popup_rows)
+        + f"<tr><td><strong>Summa utan överlapp</strong></td><td style=\"text-align:right;\"><strong>{int(unique_total)}</strong></td></tr>"
+        + f"<tr><td><strong>Summa med överlapp</strong></td><td style=\"text-align:right;\"><strong>{int(overlap_total)}</strong></td></tr>"
+        + f"<tr><td>Överlapp</td><td style=\"text-align:right;\">{duplicate_hits}</td></tr>"
+        "</tbody></table></div>"
+    )
+
+    folium.Marker(
+        location=[pt.y, pt.x],
+        popup=folium.Popup(popup_html, max_width=360),
+        icon=folium.DivIcon(
+            icon_size=(1, 1),
+            icon_anchor=(0, 0),
+            html=(
+                "<div style=\""
+                "display:flex;flex-direction:column;align-items:flex-start;gap:5px;"
+                "transform:translate(24px, -50%);"
+                "white-space:nowrap;pointer-events:auto;"
+                "\">"
+                + "".join(bubble_rows)
+                + "</div>"
+            ),
+        ),
+    ).add_to(m)
+    return len(layer_summary_rows) + 1
+
+
+def _add_analysis_unit_layer_bubbles(
+    m: folium.Map,
+    summary: gpd.GeoDataFrame | None,
+    layer_summary_details: list[tuple[str, gpd.GeoDataFrame, str]],
+) -> int:
+    if summary is None or len(summary) == 0 or not layer_summary_details:
+        return 0
+
+    layer_counts: list[tuple[str, dict[str, int], str]] = []
+    for label, layer_summary, color in layer_summary_details:
+        counts: dict[str, int] = {}
+        if layer_summary is not None and len(layer_summary) > 0:
+            counts = {
+                str(row["kategori"]): int(row["n"])
+                for _, row in layer_summary[["kategori", "n"]].iterrows()
+            }
+        layer_counts.append((str(label), counts, str(color)))
+
+    drawn = 0
+    for _, row in summary.iterrows():
+        area_label = str(row["kategori"])
+        unique_total = int(row["n"])
+        overlap_total = int(sum(counts.get(area_label, 0) for _, counts, _ in layer_counts))
+        if unique_total == 0 and overlap_total == 0:
+            continue
+        pt = row.geometry
+        if pt is None or getattr(pt, "is_empty", False):
+            continue
+        if pt.geom_type != "Point":
+            try:
+                pt = pt.representative_point()
+            except Exception:
+                continue
+
+        bubble_rows = []
+        popup_rows = []
+        for layer_label, counts, color in layer_counts:
+            n = int(counts.get(area_label, 0))
+            bubble_rows.append(
+                "<div style=\""
+                "display:flex;align-items:center;gap:5px;"
+                "background:rgba(255,255,255,0.94);"
+                "border:1px solid rgba(15,23,42,0.24);"
+                "border-radius:999px;padding:3px 7px;"
+                "font-size:11px;font-weight:700;line-height:1.12;color:#0f172a;"
+                "box-shadow:0 1px 4px rgba(15,23,42,0.16);"
+                "\">"
+                f"<span style=\"width:8px;height:8px;border-radius:999px;background:{html.escape(color)};display:inline-block;\"></span>"
+                f"<span style=\"max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;\">{html.escape(layer_label)}</span>"
+                f"<span>{n}</span>"
+                "</div>"
+            )
+            popup_rows.append(f"<tr><td>{html.escape(layer_label)}</td><td style=\"text-align:right;\">{n}</td></tr>")
+
+        total_label = f"Summa: {unique_total} ({overlap_total} med överlapp)"
+        bubble_rows.append(
+            "<div style=\""
+            "display:inline-flex;align-items:center;"
+            "background:rgba(17,24,39,0.94);color:#ffffff;"
+            "border:1px solid rgba(255,255,255,0.45);"
+            "border-radius:999px;padding:4px 8px;"
+            "font-size:11px;font-weight:800;line-height:1.12;"
+            "box-shadow:0 1px 5px rgba(15,23,42,0.22);"
+            "\">"
+            f"{html.escape(total_label)}"
+            "</div>"
+        )
+        popup_html = (
+            "<div style=\"font-size:13px;\">"
+            f"<strong>{html.escape(area_label)}</strong>"
+            "<table style=\"border-collapse:collapse;margin-top:6px;width:100%;\">"
+            "<tbody>"
+            + "".join(popup_rows)
+            + f"<tr><td><strong>Summa utan överlapp</strong></td><td style=\"text-align:right;\"><strong>{unique_total}</strong></td></tr>"
+            + f"<tr><td><strong>Summa med överlapp</strong></td><td style=\"text-align:right;\"><strong>{overlap_total}</strong></td></tr>"
+            + f"<tr><td>Överlapp</td><td style=\"text-align:right;\">{max(0, overlap_total - unique_total)}</td></tr>"
+            "</tbody></table></div>"
+        )
+        folium.Marker(
+            location=[pt.y, pt.x],
+            popup=folium.Popup(popup_html, max_width=340),
+            icon=folium.DivIcon(
+                icon_size=(1, 1),
+                icon_anchor=(0, 0),
+                html=(
+                    "<div style=\""
+                    "display:flex;flex-direction:column;align-items:flex-start;gap:4px;"
+                    "transform:translate(18px, -50%);"
+                    "white-space:nowrap;pointer-events:auto;"
+                    "\">"
+                    + "".join(bubble_rows)
+                    + "</div>"
                 ),
             ),
         ).add_to(m)
@@ -1386,6 +1925,139 @@ def _render_legend_card(title: str, items: list[dict[str, str]], caption: str | 
     )
 
 
+def _format_compact_table_value(value: object) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    if isinstance(value, numbers.Number):
+        try:
+            numeric_value = float(value)
+            if numeric_value.is_integer():
+                return f"{int(numeric_value):,}".replace(",", " ")
+        except Exception:
+            pass
+    return str(value)
+
+
+def _compact_numeric_value(value: object) -> float | None:
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+_MISSING_PREVIOUS_VALUE = object()
+
+
+def _analysis_table_previous(df: pd.DataFrame, signature: dict[str, object]) -> pd.DataFrame | None:
+    state_key = "right_panel_analysis_table_state"
+    current_df = df.copy()
+    current_signature = hashlib.md5(json.dumps(signature, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    state = st.session_state.get(state_key)
+    if not isinstance(state, dict):
+        st.session_state[state_key] = {
+            "signature": current_signature,
+            "current": current_df,
+            "previous_for_delta": None,
+        }
+        return None
+    if state.get("signature") != current_signature:
+        previous_df = state.get("current")
+        st.session_state[state_key] = {
+            "signature": current_signature,
+            "current": current_df,
+            "previous_for_delta": previous_df,
+        }
+        return previous_df if isinstance(previous_df, pd.DataFrame) else None
+    previous_for_delta = state.get("previous_for_delta")
+    state["current"] = current_df
+    st.session_state[state_key] = state
+    return previous_for_delta if isinstance(previous_for_delta, pd.DataFrame) else None
+
+
+def _analysis_delta_badge(current_value: object, previous_value: object | None = _MISSING_PREVIOUS_VALUE) -> str:
+    current = _compact_numeric_value(current_value)
+    if previous_value is _MISSING_PREVIOUS_VALUE:
+        if current is None or current == 0:
+            return ""
+        return '<span class="analysis-delta up">&uarr; nytt</span>'
+    previous = _compact_numeric_value(previous_value)
+    if current is None or previous is None:
+        return ""
+    if previous == 0:
+        if current == 0:
+            return '<span class="analysis-delta same">&rarr; 0.0%</span>'
+        return '<span class="analysis-delta up">&uarr; nytt</span>'
+    pct = ((current - previous) / abs(previous)) * 100.0
+    if abs(pct) < 0.05:
+        return '<span class="analysis-delta same">&rarr; 0.0%</span>'
+    if pct > 0:
+        return f'<span class="analysis-delta up">&uarr; {abs(pct):.1f}%</span>'
+    return f'<span class="analysis-delta down">&darr; {abs(pct):.1f}%</span>'
+
+
+def _render_compact_analysis_table(
+    df: pd.DataFrame,
+    max_height: int = 360,
+    previous_df: pd.DataFrame | None = None,
+) -> None:
+    if df is None or df.empty:
+        return
+    columns = list(df.columns)
+    first_col_width = 26 if len(columns) > 4 else 34
+    other_width = max(9, int((100 - first_col_width) / max(1, len(columns) - 1)))
+    colgroup = [f'<col style="width:{first_col_width}%;">']
+    colgroup.extend(f'<col style="width:{other_width}%;">' for _ in columns[1:])
+    numeric_cols = {col for col in columns if pd.api.types.is_numeric_dtype(df[col])}
+    previous_lookup: dict[tuple[str, str], object] = {}
+    if previous_df is not None and not previous_df.empty and len(previous_df.columns) > 0:
+        previous_key_col = str(previous_df.columns[0])
+        for _, previous_row in previous_df.iterrows():
+            row_key = str(previous_row.get(previous_key_col, ""))
+            for col in previous_df.columns[1:]:
+                previous_lookup[(row_key, str(col))] = previous_row[col]
+    header_cells = "".join(f"<th>{html.escape(str(col))}</th>" for col in columns)
+    rows: list[str] = []
+    for _, row in df.iterrows():
+        first_value = str(row.iloc[0]).strip().upper() if len(row) else ""
+        row_class = ' class="analysis-total-row"' if first_value == "SUMMA" else ""
+        row_key = str(row.iloc[0]) if len(row) else ""
+        cells: list[str] = []
+        for col in columns:
+            value = row[col]
+            is_numeric = col in numeric_cols or isinstance(value, numbers.Number)
+            css_class = "num" if is_numeric else "text"
+            value_html = f'<div class="analysis-cell-value">{html.escape(_format_compact_table_value(value))}</div>'
+            badge_html = (
+                _analysis_delta_badge(value, previous_lookup.get((row_key, str(col)), _MISSING_PREVIOUS_VALUE))
+                if is_numeric and previous_df is not None
+                else ""
+            )
+            cells.append(f'<td class="{css_class}">{value_html}{badge_html}</td>')
+        rows.append(f"<tr{row_class}>{''.join(cells)}</tr>")
+    st.markdown(
+        (
+            f'<div class="right-analysis-table-scroll" style="max-height:{int(max_height)}px;">'
+            '<table class="right-analysis-table">'
+            f"<colgroup>{''.join(colgroup)}</colgroup>"
+            f"<thead><tr>{header_cells}</tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody>"
+            "</table>"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
 def _render_active_legends(
     *,
     show_lan_boundary: bool,
@@ -1407,6 +2079,8 @@ def _render_active_legends(
     show_sensitive_points: bool,
     show_non_sensitive_points: bool,
     point_buffer_m: int,
+    point_color_legend_items: list[dict[str, str]],
+    point_color_caption: str,
     analysis_enabled: bool,
     analysis_metric: str,
     selected_lst_layer: gpd.GeoDataFrame | None,
@@ -1496,14 +2170,7 @@ def _render_active_legends(
             active_point_layer_labels.append("Extra känsliga platser")
         if show_non_sensitive_points:
             active_point_layer_labels.append("Inte extra känsliga platser")
-        for group_id in sorted(GROUP_NAME_BY_ID.keys(), key=lambda value: int(value)):
-            point_items.append(
-                {
-                    "label": GROUP_NAME_BY_ID[group_id],
-                    "color": getattr(map_factory, "GROUP_PALETTE", {}).get(int(group_id), "#9ca3af"),
-                    "shape": "circle",
-                }
-            )
+        point_items.extend(point_color_legend_items)
         if point_buffer_m > 0:
             point_items.append(
                 {
@@ -1515,7 +2182,7 @@ def _render_active_legends(
             {
                 "title": "Betydelsefulla platser",
                 "items": point_items,
-                "caption": "Färg visar kommungrupp för aktiva punktlager.",
+                "caption": point_color_caption,
                 "footer": f"Aktiva lager: {', '.join(active_point_layer_labels)}.",
             }
         )
@@ -1585,11 +2252,19 @@ area_mode_options += [f"Kommungrupp: {x}" for x in group_id_by_name.keys()]
 with st.sidebar:
     st.header("Kartinställningar")
     selected_area = st.selectbox("Arbetsområde", area_mode_options, index=0)
-    filter_mode = st.selectbox("Filtergrund", ["Hemvist (QI)", "Koordinatläge (spatialt)"], index=0)
+    filter_mode = st.selectbox(
+        "Filtergrund",
+        ["Hemvist (QI)", "Koordinatläge (spatialt)", "Hemvist inom valt arbetsområde"],
+        index=0,
+    )
     if filter_mode == "Hemvist (QI)":
         st.caption(
             "Hemvist (QI): För kommun och kommungrupp visas punkter från respondenter som bor i valt arbetsområde (resp_kom). "
             "Punkterna kan ligga var som helst i länet."
+        )
+    elif filter_mode == "Hemvist inom valt arbetsområde":
+        st.caption(
+            "Visar bara punkter som både ligger i valt arbetsområde och har respondentens hemvist i samma arbetsområde."
         )
 
     st.subheader("Bakgrund")
@@ -1640,6 +2315,14 @@ def _session_int(key: str, default: int, min_value: int, max_value: int) -> int:
     return max(min_value, min(max_value, value))
 
 
+def _session_float(key: str, default: float, min_value: float, max_value: float) -> float:
+    try:
+        value = float(st.session_state.get(key, default))
+    except Exception:
+        value = default
+    return max(min_value, min(max_value, value))
+
+
 def _session_range(key: str, default: tuple[int, int], min_value: int, max_value: int) -> tuple[int, int]:
     raw = st.session_state.get(key, default)
     try:
@@ -1659,12 +2342,12 @@ if RIGHT_PANEL_OPEN_KEY not in st.session_state:
 show_right_panel = bool(st.session_state.get(RIGHT_PANEL_OPEN_KEY, True))
 
 if show_right_panel:
-    main_col, right_toggle_col, right_col = st.columns([4.75, 0.08, 1.2], gap="small")
+    main_col, right_toggle_col, right_col = st.columns([4.2, 0.08, 1.65], gap="small")
 else:
     main_col, right_toggle_col = st.columns([5.95, 0.08], gap="small")
     right_col = None
 
-right_panel_width_css = "min(22rem, 34vw)"
+right_panel_width_css = "clamp(32rem, 42vw, 50rem)"
 right_toggle_right_css = f"calc({right_panel_width_css} + 0.45rem)" if show_right_panel else "0.65rem"
 right_panel_drawer_css = ""
 if show_right_panel:
@@ -1691,6 +2374,87 @@ if show_right_panel:
         div[data-testid="stAppViewContainer"] section.main .block-container,
         div[data-testid="stAppViewContainer"] .main .block-container {{
           padding-right: calc({right_panel_width_css} + 1.25rem);
+        }}
+        .right-analysis-table-scroll {{
+          overflow: auto;
+          border: 1px solid rgba(148, 163, 184, 0.38);
+          border-radius: 8px;
+          background: #ffffff;
+          margin-top: 0.45rem;
+        }}
+        .right-analysis-table {{
+          width: 100%;
+          border-collapse: collapse;
+          table-layout: fixed;
+          font-size: 0.76rem;
+          line-height: 1.16;
+          color: #0f172a;
+        }}
+        .right-analysis-table th,
+        .right-analysis-table td {{
+          border-bottom: 1px solid rgba(148, 163, 184, 0.28);
+          border-right: 1px solid rgba(148, 163, 184, 0.22);
+          padding: 0.28rem 0.36rem;
+          vertical-align: top;
+        }}
+        .right-analysis-table th {{
+          position: sticky;
+          top: 0;
+          z-index: 1;
+          background: #f8fafc;
+          color: #64748b;
+          font-weight: 650;
+          text-align: left;
+          white-space: normal;
+          overflow-wrap: anywhere;
+          word-break: normal;
+        }}
+        .right-analysis-table td.text {{
+          white-space: normal;
+          overflow-wrap: anywhere;
+        }}
+        .right-analysis-table td.num {{
+          text-align: right;
+          white-space: nowrap;
+          font-variant-numeric: tabular-nums;
+        }}
+        .right-analysis-table .analysis-cell-value {{
+          line-height: 1.15;
+        }}
+        .right-analysis-table .analysis-delta {{
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          margin-top: 0.18rem;
+          padding: 0.08rem 0.32rem;
+          border-radius: 999px;
+          font-size: 0.68rem;
+          font-weight: 750;
+          line-height: 1.15;
+          white-space: nowrap;
+        }}
+        .right-analysis-table .analysis-delta.up {{
+          background: #dcfce7;
+          color: #166534;
+        }}
+        .right-analysis-table .analysis-delta.down {{
+          background: #fee2e2;
+          color: #991b1b;
+        }}
+        .right-analysis-table .analysis-delta.same {{
+          background: #fef3c7;
+          color: #92400e;
+        }}
+        .right-analysis-table tr.analysis-total-row td {{
+          background: #f8fafc;
+          font-weight: 750;
+        }}
+        div[data-testid="column"]:has(#right-panel-content-anchor) div[data-testid="stMetricLabel"] p {{
+          white-space: normal;
+          line-height: 1.12;
+        }}
+        div[data-testid="column"]:has(#right-panel-content-anchor) div[data-testid="stMetricValue"] {{
+          font-size: 1.25rem;
         }}
         """
 
@@ -1761,8 +2525,11 @@ with right_toggle_col:
         st.rerun()
 
 analysis_metric_options = ["Punkter", "Unika respondenter"]
+analysis_results_container = None
 if right_col is not None:
     point_buffer_default = _session_int("right_panel_point_buffer_m", 0, 0, 3000)
+    point_radius_default = _session_float("right_panel_point_radius", 3.5, 1.0, 9.0)
+    point_opacity_default = _session_int("right_panel_point_opacity_pct", 85, 10, 100)
     analysis_enabled_default = bool(st.session_state.get("right_panel_analysis_enabled", False))
     analysis_metric_default = str(st.session_state.get("right_panel_analysis_metric", "Punkter"))
     if analysis_metric_default not in analysis_metric_options:
@@ -1779,6 +2546,24 @@ if right_col is not None:
         st.markdown('<span id="right-panel-content-anchor"></span>', unsafe_allow_html=True)
         st.subheader("Punktbuffert")
         point_buffer_m = st.slider("Buffert runt tända punktlager (meter)", 0, 3000, point_buffer_default, 100, key="point_buffer_right")
+        with st.expander("Avancerade punktinställningar", expanded=False):
+            point_radius = st.slider(
+                "Punktstorlek",
+                1.0,
+                9.0,
+                point_radius_default,
+                0.5,
+                key="point_radius_right",
+            )
+            point_opacity_pct = st.slider(
+                "Punktopacitet (%)",
+                10,
+                100,
+                point_opacity_default,
+                5,
+                key="point_opacity_right",
+            )
+            point_opacity = point_opacity_pct / 100.0
         st.subheader("Punktanalys")
         analysis_enabled = st.checkbox("Visa antal punkter i valda kartlager", value=analysis_enabled_default, key="analysis_enabled_right")
         analysis_metric = "Punkter"
@@ -1793,6 +2578,7 @@ if right_col is not None:
             analysis_near_m = st.slider("Närhetszon runt valda kartlager (meter)", 0, 3000, analysis_near_default, 50, key="analysis_near_m_right")
         else:
             st.caption("Aktivera analysen för att välja mått och närhetszon.")
+        analysis_results_container = st.container()
 
         st.subheader(LAYER_LABELS["boreal_density"])
         st.markdown(
@@ -1817,6 +2603,8 @@ if right_col is not None:
         else:
             boreal_value_range = (boreal_min_val, boreal_max_val)
     st.session_state["right_panel_point_buffer_m"] = int(point_buffer_m)
+    st.session_state["right_panel_point_radius"] = float(point_radius)
+    st.session_state["right_panel_point_opacity_pct"] = int(point_opacity_pct)
     st.session_state["right_panel_analysis_enabled"] = bool(analysis_enabled)
     st.session_state["right_panel_analysis_metric"] = str(analysis_metric)
     st.session_state["right_panel_analysis_near_m"] = int(analysis_near_m)
@@ -1824,6 +2612,9 @@ if right_col is not None:
     st.session_state["right_panel_boreal_range"] = tuple(int(v) for v in boreal_value_range)
 else:
     point_buffer_m = _session_int("right_panel_point_buffer_m", 0, 0, 3000)
+    point_radius = _session_float("right_panel_point_radius", 3.5, 1.0, 9.0)
+    point_opacity_pct = _session_int("right_panel_point_opacity_pct", 85, 10, 100)
+    point_opacity = point_opacity_pct / 100.0
     analysis_enabled = bool(st.session_state.get("right_panel_analysis_enabled", False))
     analysis_metric_raw = str(st.session_state.get("right_panel_analysis_metric", "Punkter"))
     analysis_metric = analysis_metric_raw if analysis_metric_raw in analysis_metric_options else "Punkter"
@@ -1850,6 +2641,13 @@ elif selected_area.startswith("Kommun: "):
     area_kind, area_value = "kommun", selected_area.replace("Kommun: ", "", 1)
 else:
     area_kind, area_value = "kommungrupp", selected_area.replace("Kommungrupp: ", "", 1)
+
+point_color_by_key, point_label_by_key, point_color_legend_items = _point_color_maps(
+    area_kind,
+    kommun_code_by_name,
+    group_id_by_name,
+)
+point_color_caption = _point_color_caption(filter_mode, area_kind)
 
 
 def _analysis_scope_label(kind: str, value: str) -> str:
@@ -1952,7 +2750,12 @@ if show_plats1_points or show_plats2_points or show_sensitive_points or show_non
                     return True
         return False
 
-    if filter_mode == "Hemvist (QI)" and area_kind in {"kommun", "kommungrupp"}:
+    if filter_mode in {"Hemvist (QI)", "Hemvist inom valt arbetsområde"} and area_kind in {
+        "kommun",
+        "kommungrupp",
+        "all_kommuner",
+        "all_kommungrupper",
+    }:
         has_home = any(
             _has_home_values(g)
             for g in [plats1_points, plats2_points, sensitive_points, non_sensitive_points]
@@ -1994,6 +2797,39 @@ if show_plats1_points or show_plats2_points or show_sensitive_points or show_non
                     st.caption(f"Filter aktivt: skoglig värdekärna {vmin}-{vmax}.")
             else:
                 st.caption(f"Filter aktivt: skoglig värdekärna {vmin}-{vmax}.")
+
+    plats1_points = _apply_point_display_colors(
+        plats1_points,
+        filter_mode,
+        area_kind,
+        kommuner,
+        point_color_by_key,
+        point_label_by_key,
+    )
+    plats2_points = _apply_point_display_colors(
+        plats2_points,
+        filter_mode,
+        area_kind,
+        kommuner,
+        point_color_by_key,
+        point_label_by_key,
+    )
+    sensitive_points = _apply_point_display_colors(
+        sensitive_points,
+        filter_mode,
+        area_kind,
+        kommuner,
+        point_color_by_key,
+        point_label_by_key,
+    )
+    non_sensitive_points = _apply_point_display_colors(
+        non_sensitive_points,
+        filter_mode,
+        area_kind,
+        kommuner,
+        point_color_by_key,
+        point_label_by_key,
+    )
 
     after_counts = {
         "Vald plats 1": len(plats1_points) if plats1_points is not None else 0,
@@ -2055,7 +2891,12 @@ if show_plats1_points or show_plats2_points or show_sensitive_points or show_non
         }
     )
 
-    if filter_mode == "Hemvist (QI)" and area_kind in {"kommun", "kommungrupp"}:
+    if filter_mode == "Hemvist (QI)" and area_kind in {
+        "kommun",
+        "kommungrupp",
+        "all_kommuner",
+        "all_kommungrupper",
+    }:
         active_counts = []
         if show_plats1_points:
             active_counts.append(len(plats1_points) if plats1_points is not None else 0)
@@ -2158,7 +2999,8 @@ m = _build_map_compat(
     sensitive_buffer_m=point_buffer_m,
     sty_opacity=0.6,
     layer_opacity=kartlager_opacity,
-    point_radius=3.5,
+    point_radius=point_radius,
+    point_opacity=point_opacity,
     show_landscape_colored_points=False,
     show_landscape_aggregated_points=False,
     wind_turbines=wind_turbines,
@@ -2174,6 +3016,8 @@ selected_lst_layer = None
 selected_lst_layer_count = 0
 analysis_blocked_multi_lst = False
 if analysis_enabled:
+    analysis_detail_lines: list[str] = []
+    analysis_category_widget: dict[str, object] | None = None
     analysis_pts = _analysis_points(
         show_plats1_points,
         show_plats2_points,
@@ -2195,57 +3039,25 @@ if analysis_enabled:
             lst_active_layers.append((key, layer, choose_default_field(layer)))
 
     selected_lst_layers: list[gpd.GeoDataFrame] = []
+    single_selected_key: str | None = None
     if len(lst_active_layers) > 1:
         selected_lst_layers = [layer for _, layer, _ in lst_active_layers]
         selected_lst_layer_count = len(selected_lst_layers)
         layer_labels = [_analysis_layer_label(key) for key, _, _ in lst_active_layers]
-        if right_col is not None:
-            with right_col:
-                st.warning(
-                    "Punktanalys med två eller flera kartlager kan ge flera möjliga svar. "
-                    "Totalsumman räknar varje punkt en gång om den ligger i minst ett valt lager. "
-                    "Siffror per lager kan överlappa, så välj lager noggrant och summera inte delresultat utan kontroll."
-                )
-                st.caption(f"Valda analyslager: {', '.join(layer_labels)}.")
-                with st.expander("Så räknas totalsumman", expanded=False):
-                    st.markdown(
-                        "- Lagren mergeas inte permanent i datakällan.\n"
-                        "- Appen skapar en tillfällig gemensam analysmask av de valda lagren.\n"
-                        "- Varje punkt testas mot hela masken.\n"
-                        "- Om en punkt träffar flera polygoner eller flera lager räknas den ändå bara en gång i totalsumman.\n"
-                        "- Tabellen per lager visar separata träffar och kan därför summera till mer än den unika totalsumman.\n"
-                        "- Dubbelräknad summa är fel svar på frågan hur många unika platser som redan berörs, "
-                        "men kan vara värdefull om man vill visa hur många skyddslager-träffar platserna har."
-                    )
+        analysis_detail_lines.extend(
+            [
+                "Punktanalys med två eller flera kartlager kan ge flera möjliga svar.",
+                "Totalsumman räknar varje punkt en gång om den ligger i minst ett valt lager.",
+                "Siffror per lager kan överlappa, så summera inte delresultat utan kontroll.",
+                f"Valda analyslager: {', '.join(layer_labels)}.",
+            ]
+        )
     elif len(lst_active_layers) == 1:
         selected_key, selected_lst_layer, selected_field = lst_active_layers[0]
+        single_selected_key = selected_key
         selected_lst_layers = [selected_lst_layer]
         selected_lst_layer_count = 1
-        if right_col is not None:
-            with right_col:
-                st.caption("Punktanalys: arbetsområde + ett aktivt kartlager.")
-                if selected_field is not None and selected_field in selected_lst_layer.columns:
-                    vals = (
-                        selected_lst_layer[selected_field]
-                        .dropna()
-                        .astype(str)
-                        .str.strip()
-                    )
-                    uniq = sorted([v for v in vals.unique().tolist() if v != ""])
-                    if len(uniq) > 0:
-                        selected_cat = st.selectbox(
-                            "Kategori i valt LST-lager (valfritt)",
-                            ["Alla kategorier"] + uniq,
-                            index=0,
-                            key=f"lst_cat_{selected_key}",
-                        )
-                        if selected_cat != "Alla kategorier":
-                            selected_lst_layer = selected_lst_layer[
-                                selected_lst_layer[selected_field].astype(str).str.strip() == selected_cat
-                            ].copy()
-                            selected_lst_layers = [selected_lst_layer]
-                            st.caption(f"Kategori: {selected_cat}")
-        elif selected_field is not None and selected_field in selected_lst_layer.columns:
+        if selected_field is not None and selected_field in selected_lst_layer.columns:
             vals = (
                 selected_lst_layer[selected_field]
                 .dropna()
@@ -2253,15 +3065,25 @@ if analysis_enabled:
                 .str.strip()
             )
             uniq = sorted([v for v in vals.unique().tolist() if v != ""])
-            selected_cat = str(st.session_state.get(f"lst_cat_{selected_key}", "Alla kategorier"))
-            if selected_cat in uniq:
+            if len(uniq) > 0:
+                category_key = f"lst_cat_{selected_key}"
+                category_options = ["Alla kategorier"] + uniq
+                selected_cat = str(st.session_state.get(category_key, "Alla kategorier"))
+                if selected_cat not in category_options:
+                    selected_cat = "Alla kategorier"
+                    st.session_state[category_key] = selected_cat
+                analysis_category_widget = {
+                    "key": category_key,
+                    "options": category_options,
+                    "selected": selected_cat,
+                }
+            else:
+                selected_cat = "Alla kategorier"
+            if selected_cat != "Alla kategorier":
                 selected_lst_layer = selected_lst_layer[
                     selected_lst_layer[selected_field].astype(str).str.strip() == selected_cat
                 ].copy()
                 selected_lst_layers = [selected_lst_layer]
-    elif right_col is not None:
-        with right_col:
-            st.caption("Punktanalys: endast arbetsområde.")
 
     selected_lst_layer = selected_lst_layers[0] if selected_lst_layers else None
     selected_lst_layer_count = len(selected_lst_layers)
@@ -2272,44 +3094,172 @@ if analysis_enabled:
         q_suffix = " inom minst ett av de valda kartlagren"
     else:
         q_suffix = " inom valt kartlager"
-    st.caption(f"Fråga: Hur många {q_points.lower()} finns i {q_area}{q_suffix}? Svaret visas i kartan.")
+    map_analysis_scope_text = f"{q_points.lower()} i {q_area}{q_suffix}"
 
     analysis_pts_base = analysis_pts
     analysis_pts, lst_zone = _apply_lst_mask(analysis_pts, selected_lst_layers, analysis_near_m)
     units, unit_col = _analysis_units(area_kind, area_value, lan_boundary, kommuner, kommungrupper)
-    summary = _analysis_summary(analysis_pts, units, unit_col, analysis_metric)
+    def _summarize_points_for_area(points: gpd.GeoDataFrame | None) -> gpd.GeoDataFrame:
+        return _analysis_summary(
+            points,
+            units,
+            unit_col,
+            analysis_metric,
+            filter_mode=filter_mode,
+            area_kind=area_kind,
+            area_value=area_value,
+            kommun_code_by_name=kommun_code_by_name,
+            group_id_by_name=group_id_by_name,
+            kommuner=kommuner,
+        )
+
+    summary = _summarize_points_for_area(analysis_pts)
     layer_summary_rows: list[dict[str, object]] = []
-    if selected_lst_layer_count > 1 and analysis_pts_base is not None and units is not None and len(units) > 0:
-        for key, layer, _ in lst_active_layers:
+    layer_summary_details: list[tuple[str, gpd.GeoDataFrame, str]] = []
+    selected_layer_specs: list[tuple[str, gpd.GeoDataFrame]] = []
+    if selected_lst_layer_count > 1:
+        selected_layer_specs = [(key, layer) for key, layer, _ in lst_active_layers]
+    elif selected_lst_layer_count == 1 and selected_lst_layer is not None:
+        selected_layer_specs = [(single_selected_key or "kartlager", selected_lst_layer)]
+    if selected_layer_specs and analysis_pts_base is not None and units is not None and len(units) > 0:
+        for idx, (key, layer) in enumerate(selected_layer_specs):
             layer_pts, _ = _apply_lst_mask(analysis_pts_base, [layer], analysis_near_m)
-            layer_summary = _analysis_summary(layer_pts, units, unit_col, analysis_metric)
+            layer_summary = _summarize_points_for_area(layer_pts)
+            layer_total = int(layer_summary["n"].sum()) if layer_summary is not None and len(layer_summary) > 0 else 0
+            layer_label = _analysis_layer_label(key)
+            layer_color = _analysis_layer_color(key, idx)
             layer_summary_rows.append(
                 {
-                    "Kartlager": _analysis_layer_label(key),
-                    "Summa n": int(layer_summary["n"].sum()) if layer_summary is not None and len(layer_summary) > 0 else 0,
+                    "Kartlager": layer_label,
+                    "Antal punkter": layer_total,
+                    "_color": layer_color,
                 }
             )
+            layer_summary_details.append((layer_label, layer_summary, layer_color))
     _add_lst_zone_overlay(m, lst_zone)
     bubbles_drawn = _add_analysis_bubbles(m, summary)
-    if right_col is not None:
-        with right_col:
+    if layer_summary_rows and summary is not None and len(summary) > 0:
+        unique_total_for_bubbles = int(summary["n"].sum())
+        overlap_total_for_bubbles = int(sum(int(row["Antal punkter"]) for row in layer_summary_rows))
+        if area_kind in {"all_kommuner", "all_kommungrupper"}:
+            _add_analysis_unit_layer_bubbles(m, summary, layer_summary_details)
+        else:
+            _add_analysis_layer_total_bubbles(
+                m,
+                units,
+                layer_summary_rows,
+                unique_total_for_bubbles,
+                overlap_total_for_bubbles,
+            )
+    unit_summary_table: pd.DataFrame | None = None
+    if summary is not None and len(summary) > 0:
+        unit_summary_table = (
+            pd.DataFrame(summary[["kategori", "n"]])
+            .rename(columns={"kategori": "Arbetsområde", "n": "Summa utan överlapp"})
+            .copy()
+        )
+        layer_cols: list[str] = []
+        for label, layer_summary, _ in layer_summary_details:
+            safe_label = str(label)
+            if layer_summary is None or len(layer_summary) == 0:
+                values = pd.DataFrame({"Arbetsområde": unit_summary_table["Arbetsområde"], safe_label: 0})
+            else:
+                values = (
+                    pd.DataFrame(layer_summary[["kategori", "n"]])
+                    .rename(columns={"kategori": "Arbetsområde", "n": safe_label})
+                    .copy()
+                )
+            unit_summary_table = unit_summary_table.merge(values, on="Arbetsområde", how="left")
+            unit_summary_table[safe_label] = unit_summary_table[safe_label].fillna(0).astype(int)
+            layer_cols.append(safe_label)
+        if layer_cols:
+            unit_summary_table["Summa med överlapp"] = unit_summary_table[layer_cols].sum(axis=1).astype(int)
+        else:
+            unit_summary_table["Summa med överlapp"] = unit_summary_table["Summa utan överlapp"].astype(int)
+        unit_summary_table["Överlapp"] = (
+            unit_summary_table["Summa med överlapp"] - unit_summary_table["Summa utan överlapp"]
+        ).clip(lower=0).astype(int)
+        unit_summary_table["Summa utan överlapp"] = unit_summary_table["Summa utan överlapp"].astype(int)
+        if len(unit_summary_table) > 1:
+            total_row: dict[str, object] = {"Arbetsområde": "SUMMA"}
+            for col in unit_summary_table.columns:
+                if col != "Arbetsområde":
+                    total_row[col] = int(unit_summary_table[col].sum())
+            unit_summary_table = pd.concat([unit_summary_table, pd.DataFrame([total_row])], ignore_index=True)
+    if analysis_results_container is not None:
+        with analysis_results_container:
             if summary is not None and len(summary) > 0:
-                st.caption(f"Punktanalysen visar {analysis_metric.lower()} i {len(summary)} arbetsområde(n). Summa n: {int(summary['n'].sum())}.")
+                map_total = int(summary["n"].sum())
+                color_text = point_color_caption.replace("Färg visar ", "", 1).rstrip(".")
+                map_caption = (
+                    f"Kartan visar {analysis_metric.lower()} för {map_analysis_scope_text}. "
+                    f"Bubblorna visar antal per arbetsområde och tabellen ovan sammanfattar samma resultat "
+                    f"för {len(summary)} arbetsområde(n), totalt {map_total}. "
+                    f"Punktfärgerna visar {color_text}."
+                )
+                if unit_summary_table is not None:
+                    analysis_table_signature = {
+                        "area": selected_area,
+                        "filter": filter_mode,
+                        "metric": analysis_metric,
+                        "near_m": int(analysis_near_m),
+                        "point_layers": [
+                            bool(show_plats1_points),
+                            bool(show_plats2_points),
+                            bool(show_sensitive_points),
+                            bool(show_non_sensitive_points),
+                        ],
+                        "analysis_layers": [str(row.get("Kartlager", "")) for row in layer_summary_rows],
+                        "columns": [str(col) for col in unit_summary_table.columns],
+                        "boreal_filter": bool(filter_points_by_boreal),
+                        "boreal_range": [int(boreal_value_range[0]), int(boreal_value_range[1])],
+                        "table_hash": hashlib.md5(
+                            unit_summary_table.to_json(orient="split", default_handler=str).encode("utf-8")
+                        ).hexdigest(),
+                    }
+                    previous_summary_table = _analysis_table_previous(unit_summary_table, analysis_table_signature)
+                    _render_compact_analysis_table(
+                        unit_summary_table,
+                        max_height=380,
+                        previous_df=previous_summary_table,
+                    )
+                    st.caption(map_caption)
+                if analysis_category_widget is not None:
+                    options = list(analysis_category_widget["options"])
+                    selected_cat = str(st.session_state.get(str(analysis_category_widget["key"]), analysis_category_widget["selected"]))
+                    if selected_cat not in options:
+                        selected_cat = "Alla kategorier"
+                    st.selectbox(
+                        "Kategori i valt LST-lager (valfritt)",
+                        options,
+                        index=options.index(selected_cat),
+                        key=str(analysis_category_widget["key"]),
+                    )
+                if layer_summary_rows or analysis_detail_lines:
+                    with st.expander("Så räknas totalsumman", expanded=False):
+                        expander_lines = list(analysis_detail_lines)
+                        if layer_summary_rows:
+                            expander_lines.extend(
+                                [
+                                    "Lagren mergeas inte permanent i datakällan.",
+                                    "Appen skapar en tillfällig gemensam analysmask av de valda lagren.",
+                                    "Varje punkt testas mot hela masken.",
+                                    "Om en punkt träffar flera polygoner eller flera lager räknas den ändå bara en gång i totalsumman.",
+                                    "Tabellen per lager visar separata träffar och kan därför summera till mer än den unika totalsumman.",
+                                    "Summa utan överlapp visar unika platser. Summa med överlapp visar lagerträffar separat.",
+                                ]
+                            )
+                        st.markdown("\n".join(f"- {line}" for line in expander_lines))
+                if unit_summary_table is None:
+                    st.caption(map_caption)
                 if layer_summary_rows:
-                    unique_total = int(summary["n"].sum())
-                    layer_total = int(sum(int(row["Summa n"]) for row in layer_summary_rows))
+                    unique_total = map_total
+                    layer_total = int(sum(int(row["Antal punkter"]) for row in layer_summary_rows))
                     duplicate_hits = max(0, layer_total - unique_total)
                     metric_cols = st.columns(3)
-                    metric_cols[0].metric("Unik totalsumma", unique_total)
-                    metric_cols[1].metric("Summa med dubbelräkning", layer_total)
-                    metric_cols[2].metric("Överlapp/dubbelräkning", duplicate_hits)
-                    st.caption(
-                        "Unik totalsumma svarar på hur många platser som berörs av minst ett valt lager. "
-                        "Överlapp/dubbelräkning = summa med dubbelräkning minus unik totalsumma. "
-                        "Summa med dubbelräkning visar alla lagerträffar separat och kan ha värde för att se "
-                        "hur många platser som berörs av flera skydd eller intressen samtidigt."
-                    )
-                    st.dataframe(pd.DataFrame(layer_summary_rows), hide_index=True, use_container_width=True)
+                    metric_cols[0].metric("Summa utan överlapp", unique_total)
+                    metric_cols[1].metric("Summa med överlapp", layer_total)
+                    metric_cols[2].metric("Överlapp", duplicate_hits)
                 if bubbles_drawn == 0:
                     st.warning("Analysresultat finns men bubblor kunde inte ritas (geometriproblem).")
             else:
@@ -2318,11 +3268,43 @@ if analysis_enabled:
 _attach_leaflet_render_styles(m)
 map_shell = _stable_streamlit_map_shell(m, satellite_base)
 dynamic_feature_groups = _dynamic_feature_groups(m)
+map_key_signature = {
+    "render_version": "analysis-unit-bubbles-v2",
+    "area": selected_area,
+    "filter": filter_mode,
+    "analysis": bool(analysis_enabled),
+    "analysis_metric": str(analysis_metric),
+    "analysis_near_m": int(analysis_near_m),
+    "point_radius": float(point_radius),
+    "point_opacity": float(point_opacity),
+    "point_color_area": _point_color_area_kind(area_kind),
+    "point_layers": [
+        bool(show_plats1_points),
+        bool(show_plats2_points),
+        bool(show_sensitive_points),
+        bool(show_non_sensitive_points),
+    ],
+    "map_layers": [
+        bool(show_sty),
+        bool(show_kar),
+        bool(show_rorligt_friluftsliv),
+        bool(show_utbyggnad_vindkraft),
+        bool(show_nature_reserve),
+        bool(show_kulturmiljovard),
+        bool(show_boreal_density),
+    ],
+    "boreal_filter": bool(filter_points_by_boreal),
+    "boreal_range": [int(boreal_value_range[0]), int(boreal_value_range[1])],
+}
+map_component_key = (
+    f"{MAP_COMPONENT_KEY}_"
+    + hashlib.md5(json.dumps(map_key_signature, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+)
 
 with main_col:
     st_folium(
         map_shell,
-        key=MAP_COMPONENT_KEY,
+        key=map_component_key,
         height=920,
         width=None,
         returned_objects=[],
@@ -2351,6 +3333,8 @@ with main_col:
         show_sensitive_points=show_sensitive_points,
         show_non_sensitive_points=show_non_sensitive_points,
         point_buffer_m=point_buffer_m,
+        point_color_legend_items=point_color_legend_items,
+        point_color_caption=point_color_caption,
         analysis_enabled=analysis_enabled,
         analysis_metric=analysis_metric,
         selected_lst_layer=selected_lst_layer,
